@@ -18,7 +18,7 @@ class TavilySearchTool(BaseTool):
         
         self.client = TavilyClient(api_key=self.api_key)
 
-    async def execute(self, query: str, max_results: int = 5, **kwargs) -> Dict[str, Any]:
+    async def execute(self, query: str, max_results: int = 10, **kwargs) -> Dict[str, Any]:
         """Tavily 검색 실행"""
         try:
             # 고급 검색(advanced)으로 본문 텍스트를 풍부하게 가져옴
@@ -47,7 +47,7 @@ class TavilySearchTool(BaseTool):
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "max_results": {"type": "integer", "default": 5}
+                "max_results": {"type": "integer", "default": 10}
             },
             "required": ["query"]
         }
