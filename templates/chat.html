@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>RoutePick Chat & Map Service</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- Google Maps API (YOUR_API_KEY 입력 필요) -->
+    <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&v=weekly" async defer></script>
+</head>
+<body>
+    <div class="main-container">
+        <!-- (a) 좌측 챗봇 섹션 -->
+        <section class="left-pane">
+            <header class="chat-header"><h1>AI 가이드</h1></header>
+            <div id="chat-window" class="chat-window">
+                <!-- 채팅 내용이 여기 쌓입니다 -->
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="질문을 입력하세요...">
+                <button id="send-btn">전송</button>
+            </div>
+        </section>
+
+        <!-- 우측 섹션 -->
+        <section class="right-pane">
+            <!-- (b) 상단 구글 지도 -->
+            <div id="map-container"></div>
+
+            <!-- (c) 하단 카드 행렬 -->
+            <div id="card-matrix" class="card-matrix"></div>
+
+            <!-- (d) 햄버거 버튼 및 사이드 메뉴 -->
+            <button id="menu-toggle" class="hamburger">
+                <span class="bar"></span>
+                <span class="bar"></span>
+                <span class="bar"></span>
+            </button>
+            <nav id="side-menu" class="side-menu"></nav>
+        </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}" defer></script>
+    <!-- 챗봇 로직 동적 로드 -->
+    <script src="{{ url_for('static', filename='js/chatbot.js') }}"></script>
+</body>
+</html>

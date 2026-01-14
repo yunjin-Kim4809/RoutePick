@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <title>RoutePick</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f8f9fa;
+            font-family: sans-serif;
+        }
+
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            width: 420px;
+        }
+
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 10px;
+            cursor: pointer;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: white;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background: #f0f0f0;
+        }
+
+        input[type="text"] {
+            padding: 10px;
+            border: 2px solid #007bff;
+            border-radius: 6px;
+            width: 300px;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .result-item {
+            text-align: left;
+            background: #eee;
+            margin: 5px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="card">
+        {% if not finished %}
+        <h2>{{ messages[step - 1] }}</h2>
+
+        <form id="mainForm" method="POST">
+            <input type="hidden" name="choice" id="choice">
+            <input type="hidden" name="source" id="source">
+
+            {% if step == 1 %}
+            팁: 지역, 날씨, 여행 목적등을 자세하게 입력하면 좋아요!<br><br>
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="예시: 비 오는 날 서울 실내 데이트">
+                <button type="button" onclick="sendText()">확인</button>
+            </div>
+
+            {% elif step == 2 %}
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="예시: 서울, 부산">
+                <button type="button" onclick="sendText()">확인</button>
+            </div>
+
+            {% elif step == 3 %}
+            <div class="btn-group">
+                <button type="button" onclick="send('1', 'button')">1명</button>
+                <button type="button" onclick="send('2', 'button')">2명</button>
+                <button type="button" onclick="send('3', 'button')">3명</button>
+                <div class="input-set">
+                    <input type="text" id="textInput" placeholder="숫자로만 입력해 주세요.">
+                    <button type="button" onclick="sendText()">확인</button>
+                </div>
+                <button type="button" onclick="send('2', 'button')">건너뛰기</button>
+            </div>
+
+            {% elif step == 4 %}
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="예시: 2024-12-25">
+                <button type="button" onclick="sendText()">확인</button>
+                <button type="button" onclick="send('', 'input')">건너뛰기</button>
+            </div>
+            
+            {% elif step == 5 %}
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="예시: 오후, 저녁">
+                <button type="button" onclick="sendText()">확인</button>
+                <button type="button" onclick="send('오후', 'input')">건너뛰기</button>
+            </div>
+
+            {% elif step == 6 %}
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="예시: 도보, 지하철, 버스, 자동차">
+                <button type="button" onclick="sendText()">확인</button>
+                <button type="button" onclick="send('도보', 'input')">건너뛰기</button>
+            </div>
+            {% endif %}
+        </form>
+
+        <script>
+            // 모든 전송 로직을 하나로 통합하여 효율화
+            function send(value, src) {
+                document.getElementById("choice").value = value;
+                document.getElementById("source").value = src;
+                document.getElementById("mainForm").submit();
+            }
+
+            function sendText() {
+                const val = document.getElementById("textInput").value.trim();
+                if (!val) {
+                    alert("내용을 입력해주세요!");
+                    return;
+                }
+                send(val, "input");
+            }
+            document.getElementById("mainForm").addEventListener("keydown", function (e) {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                }
+            });
+        </script>
+
+        {% else %}
+        <h2>입력 정보 확인</h2>
+        {% for item in results %}
+        <div class="result-item">{{ messages[loop.index - 1] }}: {{ item }}</div>
+        {% endfor %}
+        <a href="/call-agent"><button class="btn-call-agent">확인</button></a>
+        <a href="/reset"><button class="btn-reset">다시 입력</button></a>
+        {% endif %}
+    </div>
+
+</body>
+
+</html>

@@ -16,3 +16,4 @@ python-dotenv>=1.0.0
 # 유틸리티
 requests>=2.31.0
 
+flask>=3.1.2

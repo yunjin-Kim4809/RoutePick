@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <title>RoutePick</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f8f9fa;
+            font-family: sans-serif;
+        }
+
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            width: 420px;
+        }
+
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 10px;
+            cursor: pointer;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: white;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background: #f0f0f0;
+        }
+
+        input[type="text"] {
+            padding: 10px;
+            border: 2px solid #007bff;
+            border-radius: 6px;
+            width: 300px;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .result-item {
+            text-align: left;
+            background: #eee;
+            margin: 5px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="card">
+    Loading...
+</div>
+<script>
+setInterval(async () => {
+    const res = await fetch("/status");
+    const data = await res.json();
+
+    if (data.done) {
+        window.location.href = "/chat-map";
+    }
+}, 1000);
+</script>
+</body>
+
+</html>
