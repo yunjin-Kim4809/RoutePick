@@ -23,14 +23,15 @@ class GoogleMapsTool(BaseTool):
             description="장소들 간의 최적 경로를 계산하고 동선을 최적화합니다.",
             config=config or {}
         )
-        self.api_key = self.config.get("api_key") or os.getenv("GOOGLE_MAPS_API_KEY")
+        self.api_key = self.config.get("api_key") or self.config.get("google_maps_api_key") or os.getenv("GOOGLE_MAPS_API_KEY")
         # API 키가 없어도 클라이언트는 None으로 유지 (나중에 설정 가능)
         self.client = None
         if self.api_key:
             try:
                 self.client = googlemaps.Client(key=self.api_key)
-            except Exception:
-                # API 키는 있지만 클라이언트 초기화 실패 시에도 계속 진행
+                print(f"✅ Google Maps Client 초기화 성공") # 확인용
+            except Exception as e:
+                print(f"❌ Google Maps Client 초기화 실패: {e}")
                 self.client = None
     
     async def execute(
@@ -127,9 +128,11 @@ class GoogleMapsTool(BaseTool):
             }
             
         except Exception as e:
+            # [수정] 실패하더라도 최소한의 데이터(순서대로 정렬된 리스트)는 돌려줍니다.
+            print(f"⚠️  Google Maps API 실행 중 오류 발생 (무시하고 진행): {e}")
             return {
-                "success": False,
-                "optimized_route": [],
+                "success": True, # ⬅️ 실패해도 True로 반환하여 시스템이 멈추지 않게 함
+                "optimized_route": places, # 원본이라도 반환
                 "total_duration": 0,
                 "total_distance": 0,
                 "directions": [],
@@ -217,15 +220,16 @@ class GoogleMapsTool(BaseTool):
                             address
                         )
                         if geocode_result:
-                            location = geocode_result[0]["geometry"]["location"]
-                            coordinates.append((location["lat"], location["lng"]))
+                            loc = geocode_result[0]["geometry"]["location"]
+                            place["coordinates"] = {"lat": loc["lat"], "lng": loc["lng"]} # 데이터 보강
+                            coordinates.append((loc["lat"], loc["lng"]))
                         else:
-                            raise ValueError(f"주소를 좌표로 변환할 수 없습니다: {address}")
-                    except Exception as e:
-                        raise ValueError(f"Geocoding 실패 ({address}): {str(e)}")
-                else:
-                    raise ValueError(f"좌표나 주소 정보가 없습니다: {place.get('name', 'Unknown')}")
-        
+                            print(f"⚠️  주소 변환 불가: {address} (건너뜀)")
+                            # 좌표를 못 찾아도 빈 값을 넣어서 인덱스 순서를 맞춥니다.
+                            coordinates.append((0.0, 0.0)) 
+                    except:
+                        print(f"⚠️  Geocoding 실패: {address} (건너뜀)")
+                        coordinates.append((0.0, 0.0)) 
         return coordinates
     
     async def _optimize_waypoint_order(

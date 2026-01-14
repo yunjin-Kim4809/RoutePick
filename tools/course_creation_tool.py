@@ -204,12 +204,15 @@ class CourseCreationTool(BaseTool):
         }}
 
         # Constraints
-        1. 각 코스 간 이동 거리는 30분 이내일 것.
-        2. 도보 외의 교통 수단의 사용 빈도를 최소화할 것. 단, 환승은 사용 빈도 계산에서 제외한다. 도보와 교통 수단의 이동 시간 차이가 20분 이내이면 도보를 선택한다.
-        3. 이전에 방문한 장소를 다시 지나지 않을 것.
-        4. 장소에 현재 인원이 모두 수용 가능할 것.
-        5. 장소가 방문 일자에 운영중임을 확인할 것. 입력된 정보가 없을 시 보수적으로 판단한다.
-        6. 음식점, 카페 등을 코스 중간마다 배치할 것.
+        1. 제공된 [위치 좌표(위도, 경도)] 데이터를 기반으로 장소 간의 실제 물리적 거리를 계산하여 코스를 짤 것.
+        2. 당신의 배경지식보다 입력된 좌표 정보가 서로 가까운 장소들을 우선적으로 그룹화할 것.
+        3. 추천 신뢰도(Trust Score)가 높은 장소를 우선적으로 고려하되, 지리적 동선 효율성을 해치지 않는 범위 내에서 선택할 것.
+        4. 각 코스 간 이동 거리는 30분 이내일 것. (좌표 데이터를 참고하여 보수적으로 판단)
+        5. 도보 외의 교통 수단의 사용 빈도를 최소화할 것. 단, 환승은 사용 빈도 계산에서 제외한다. 도보와 교통 수단의 이동 시간 차이가 20분 이내이면 도보를 선택한다.
+        6. 이전에 방문한 장소를 다시 지나지 않을 것.
+        7. 장소에 현재 인원이 모두 수용 가능할 것.
+        8. 장소가 방문 일자에 운영중임을 확인할 것. 입력된 정보가 없을 시 보수적으로 판단한다.
+        9. 음식점, 카페 등을 코스 중간마다 배치할 것.
 
         # Task Workflow
         1. 사용자의 테마와 장소의 특징을 대조하여 적합한 장소들을 선정합니다.
@@ -337,7 +340,7 @@ class CourseCreationTool(BaseTool):
         프롬프트용 장소 정보 포맷팅
         
         Args:
-            places: 장소 리스트 (name, category, rating, trust_score, address, source_url, map_url 포함)
+            places: 장소 리스트 (name, category, coordinates, rating, trust_score, address, source_url, map_url 포함)
             
         Returns:
             포맷팅된 문자열
@@ -349,6 +352,11 @@ class CourseCreationTool(BaseTool):
             if place.get('category'):
                 info += f" ({place['category']})"
             
+            # [추가] 좌표 정보를 LLM이 읽을 수 있게 텍스트로 포함
+            coords = place.get('coordinates')
+            if coords:
+                info += f" (위치: {coords.get('lat')}, {coords.get('lng')})"
+
             # 점수 정보 (평점 및 신뢰도)
             scores = []
             if place.get('rating'):
