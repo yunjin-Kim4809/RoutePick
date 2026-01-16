@@ -257,8 +257,10 @@ def call_agents():
 
 @app.route('/chat-map')
 def chat_page():
+    # .env 파일에서 Google Maps API 키 가져오기 (Config는 이미 상단에서 import됨)
     return render_template('chat.html',
-                           course=course)
+                           course=course,
+                           google_maps_api_key=Config.GOOGLE_MAPS_API_KEY)
 
 @app.route('/api/chat', methods=['POST'])
 def chat():

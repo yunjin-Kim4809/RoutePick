@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import asyncio
 import googlemaps
+from functools import lru_cache
 from .base_tool import BaseTool
 
 
@@ -33,6 +34,12 @@ class GoogleMapsTool(BaseTool):
             except Exception as e:
                 print(f"❌ Google Maps Client 초기화 실패: {e}")
                 self.client = None
+        
+        # Geocoding 캐시 (주소 -> 좌표 매핑)
+        self._geocoding_cache: Dict[str, Tuple[float, float]] = {}
+        # Directions API 재시도 설정
+        self._max_retries = 3
+        self._retry_delay = 1.0  # 초
     
     async def execute(
         self,
@@ -109,14 +116,11 @@ class GoogleMapsTool(BaseTool):
             # 최적화된 순서로 장소 재배열
             optimized_places = [places[i] for i in optimized_order]
             
-            # 각 구간별 경로 계산
-            directions = await self._calculate_directions(
+            # 최적화된 경로로 Directions API 호출 (한 번의 호출로 전체 경로 정보 획득)
+            # 이미 최적화된 순서를 알고 있으므로, 단일 Directions API 호출로 효율성 향상
+            directions, total_duration, total_distance = await self._get_optimized_route_directions(
                 optimized_places, origin, destination, mode
             )
-            
-            # 총 소요 시간 및 거리 계산
-            total_duration = sum(d.get("duration", 0) for d in directions)
-            total_distance = sum(d.get("distance", 0) for d in directions)
             
             return {
                 "success": True,
@@ -190,9 +194,45 @@ class GoogleMapsTool(BaseTool):
             "required": ["places"]
         }
     
+    async def _geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
+        """
+        주소를 좌표로 변환 (캐싱 지원)
+        
+        Args:
+            address: 주소 문자열
+            
+        Returns:
+            (lat, lng) 튜플 또는 None
+        """
+        # 캐시 확인
+        if address in self._geocoding_cache:
+            return self._geocoding_cache[address]
+        
+        if not self.client:
+            return None
+        
+        loop = asyncio.get_event_loop()
+        try:
+            # 동기 함수를 비동기로 실행
+            geocode_result = await loop.run_in_executor(
+                None,
+                self.client.geocode,
+                address
+            )
+            if geocode_result:
+                loc = geocode_result[0]["geometry"]["location"]
+                coord = (loc["lat"], loc["lng"])
+                # 캐시에 저장
+                self._geocoding_cache[address] = coord
+                return coord
+        except Exception as e:
+            print(f"⚠️  Geocoding 실패: {address} - {e}")
+        
+        return None
+    
     async def _extract_coordinates(self, places: List[Dict[str, Any]]) -> List[Tuple[float, float]]:
         """
-        장소 리스트에서 좌표 추출 (주소가 있으면 Geocoding으로 변환)
+        장소 리스트에서 좌표 추출 (주소가 있으면 Geocoding으로 변환, 병렬 처리)
         
         Args:
             places: 장소 정보 리스트
@@ -201,35 +241,61 @@ class GoogleMapsTool(BaseTool):
             (lat, lng) 튜플 리스트
         """
         coordinates = []
-        loop = asyncio.get_event_loop()
         
+        # 좌표 추출 태스크 준비
+        geocode_tasks = []
         for place in places:
             coords = place.get("coordinates")
             if coords and coords.get("lat") and coords.get("lng"):
                 # 좌표가 이미 있는 경우
                 coordinates.append((float(coords.get("lat")), float(coords.get("lng"))))
+                geocode_tasks.append(None)  # None은 이미 좌표가 있음을 의미
             else:
                 # 주소를 좌표로 변환 (Geocoding API 사용)
                 address = place.get("address") or place.get("name")
-                if address and self.client:
-                    try:
-                        # 동기 함수를 비동기로 실행
-                        geocode_result = await loop.run_in_executor(
-                            None,
-                            self.client.geocode,
-                            address
-                        )
-                        if geocode_result:
-                            loc = geocode_result[0]["geometry"]["location"]
-                            place["coordinates"] = {"lat": loc["lat"], "lng": loc["lng"]} # 데이터 보강
-                            coordinates.append((loc["lat"], loc["lng"]))
-                        else:
-                            print(f"⚠️  주소 변환 불가: {address} (건너뜀)")
-                            # 좌표를 못 찾아도 빈 값을 넣어서 인덱스 순서를 맞춥니다.
-                            coordinates.append((0.0, 0.0)) 
-                    except:
-                        print(f"⚠️  Geocoding 실패: {address} (건너뜀)")
-                        coordinates.append((0.0, 0.0)) 
+                if address:
+                    geocode_tasks.append(self._geocode_address(address))
+                else:
+                    geocode_tasks.append(None)
+                    coordinates.append((0.0, 0.0))
+        
+        # 병렬로 Geocoding 실행 (이미 좌표가 있는 것은 None이므로 건너뜀)
+        geocode_results = await asyncio.gather(*[task for task in geocode_tasks if task is not None], return_exceptions=True)
+        
+        # 결과 처리
+        result_idx = 0
+        for i, place in enumerate(places):
+            if geocode_tasks[i] is None:
+                # 이미 좌표가 있거나 주소가 없는 경우는 건너뜀
+                if i >= len(coordinates):
+                    coordinates.append((0.0, 0.0))
+                continue
+            
+            # Geocoding 결과 처리
+            if result_idx < len(geocode_results):
+                result = geocode_results[result_idx]
+                result_idx += 1
+                
+                if isinstance(result, Exception):
+                    print(f"⚠️  Geocoding 오류: {place.get('name', 'Unknown')} - {result}")
+                    if i >= len(coordinates):
+                        coordinates.append((0.0, 0.0))
+                    else:
+                        coordinates[i] = (0.0, 0.0)
+                elif result:
+                    # 좌표를 place에 저장 (데이터 보강)
+                    place["coordinates"] = {"lat": result[0], "lng": result[1]}
+                    if i >= len(coordinates):
+                        coordinates.append(result)
+                    else:
+                        coordinates[i] = result
+                else:
+                    # Geocoding 실패
+                    if i >= len(coordinates):
+                        coordinates.append((0.0, 0.0))
+                    else:
+                        coordinates[i] = (0.0, 0.0)
+        
         return coordinates
     
     async def _optimize_waypoint_order(
@@ -472,15 +538,190 @@ class GoogleMapsTool(BaseTool):
         
         return optimized_order
     
+    async def _get_optimized_route_directions(
+        self,
+        places: List[Dict[str, Any]],
+        origin: Optional[Dict[str, Any]],
+        destination: Optional[Dict[str, Any]],
+        mode: str
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
+        """
+        최적화된 경로의 전체 Directions 정보를 한 번의 API 호출로 획득
+        
+        Args:
+            places: 최적화된 순서의 장소 리스트
+            origin: 출발지
+            destination: 도착지
+            mode: 이동 수단
+            
+        Returns:
+            (directions 리스트, 총 소요 시간, 총 거리)
+        """
+        if len(places) < 2:
+            return [], 0, 0
+        
+        # 좌표 추출
+        coordinates_with_places = []
+        for place in places:
+            coords = place.get("coordinates")
+            if coords and coords.get("lat") and coords.get("lng"):
+                coordinates_with_places.append({
+                    "coord": (float(coords.get("lat")), float(coords.get("lng"))),
+                    "place": place
+                })
+            else:
+                # 주소를 좌표로 변환
+                address = place.get("address") or place.get("name")
+                if address:
+                    coord = await self._geocode_address(address)
+                    if coord:
+                        place["coordinates"] = {"lat": coord[0], "lng": coord[1]}
+                        coordinates_with_places.append({
+                            "coord": coord,
+                            "place": place
+                        })
+        
+        if len(coordinates_with_places) < 2:
+            return [], 0, 0
+        
+        # 출발지와 도착지 결정
+        origin_coord = None
+        dest_coord = None
+        
+        if origin:
+            if origin.get("coordinates"):
+                origin_coord = (origin["coordinates"]["lat"], origin["coordinates"]["lng"])
+            elif origin.get("address"):
+                origin_coord = await self._geocode_address(origin["address"])
+        
+        if destination:
+            if destination.get("coordinates"):
+                dest_coord = (destination["coordinates"]["lat"], destination["coordinates"]["lng"])
+            elif destination.get("address"):
+                dest_coord = await self._geocode_address(destination["address"])
+        
+        # 출발지/도착지가 없으면 첫 번째/마지막 좌표 사용
+        if not origin_coord:
+            origin_coord = coordinates_with_places[0]["coord"]
+        if not dest_coord:
+            dest_coord = coordinates_with_places[-1]["coord"]
+        
+        # Waypoints 추출 (출발지/도착지 제외)
+        waypoints = []
+        waypoint_places = []
+        for item in coordinates_with_places:
+            coord = item["coord"]
+            # 출발지/도착지와 같은지 확인 (허용 오차 0.0001도, 약 11m)
+            is_origin = abs(coord[0] - origin_coord[0]) < 0.0001 and abs(coord[1] - origin_coord[1]) < 0.0001
+            is_dest = abs(coord[0] - dest_coord[0]) < 0.0001 and abs(coord[1] - dest_coord[1]) < 0.0001
+            
+            if not is_origin and not is_dest:
+                waypoints.append(f"{coord[0]},{coord[1]}")
+                waypoint_places.append(item)
+        
+        # Directions API 호출 (최적화된 waypoints 포함)
+        loop = asyncio.get_event_loop()
+        origin_str = f"{origin_coord[0]},{origin_coord[1]}"
+        dest_str = f"{dest_coord[0]},{dest_coord[1]}"
+        
+        # 재시도 로직 포함
+        for attempt in range(self._max_retries):
+            try:
+                def call_directions():
+                    if waypoints:
+                        return self.client.directions(
+                            origin=origin_str,
+                            destination=dest_str,
+                            waypoints=waypoints,
+                            optimize_waypoints=False,  # 이미 최적화되어 있으므로 False
+                            mode=mode
+                        )
+                    else:
+                        return self.client.directions(
+                            origin=origin_str,
+                            destination=dest_str,
+                            mode=mode
+                        )
+                
+                directions_result = await loop.run_in_executor(None, call_directions)
+                
+                if directions_result and len(directions_result) > 0:
+                    route = directions_result[0]
+                    legs = route.get("legs", [])
+                    
+                    if legs:
+                        directions = []
+                        total_duration = 0
+                        total_distance = 0
+                        
+                        # 각 leg를 directions 형식으로 변환
+                        for i, leg in enumerate(legs):
+                            duration = leg.get("duration", {}).get("value", 0)
+                            distance = leg.get("distance", {}).get("value", 0)
+                            total_duration += duration
+                            total_distance += distance
+                            
+                            # 장소 정보 매칭
+                            from_place = places[i] if i < len(places) else {"name": "Unknown"}
+                            to_place = places[i + 1] if i + 1 < len(places) else {"name": "Unknown"}
+                            
+                            # 단계별 경로 정보 추출
+                            steps = []
+                            for step in leg.get("steps", []):
+                                steps.append({
+                                    "instruction": step.get("html_instructions", ""),
+                                    "distance": step.get("distance", {}).get("value", 0),
+                                    "duration": step.get("duration", {}).get("value", 0),
+                                    "travel_mode": step.get("travel_mode", mode)
+                                })
+                            
+                            directions.append({
+                                "from": from_place.get("name", "Unknown"),
+                                "to": to_place.get("name", "Unknown"),
+                                "from_address": from_place.get("address", ""),
+                                "to_address": to_place.get("address", ""),
+                                "duration": duration,
+                                "distance": distance,
+                                "duration_text": leg.get("duration", {}).get("text", ""),
+                                "distance_text": leg.get("distance", {}).get("text", ""),
+                                "steps": steps,
+                                "mode": mode,
+                                "start_location": {
+                                    "lat": leg.get("start_location", {}).get("lat", 0),
+                                    "lng": leg.get("start_location", {}).get("lng", 0)
+                                },
+                                "end_location": {
+                                    "lat": leg.get("end_location", {}).get("lat", 0),
+                                    "lng": leg.get("end_location", {}).get("lng", 0)
+                                }
+                            })
+                        
+                        return directions, total_duration, total_distance
+                
+                # API 응답이 비어있는 경우 폴백으로 개별 구간 계산
+                break
+                
+            except Exception as e:
+                if attempt < self._max_retries - 1:
+                    await asyncio.sleep(self._retry_delay * (attempt + 1))  # 지수 백오프
+                    continue
+                else:
+                    print(f"⚠️  Directions API 호출 실패 (재시도 {self._max_retries}회): {e}")
+                    # 폴백: 개별 구간별 계산
+                    break
+        
+        # 폴백: 개별 구간별로 Directions API 호출
+        return await self._calculate_directions(places, origin, destination, mode)
+    
     async def _calculate_directions(
         self,
         places: List[Dict[str, Any]],
         origin: Optional[Dict[str, Any]],
         destination: Optional[Dict[str, Any]],
         mode: str
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
         """
-        각 구간별 경로 정보 계산
+        각 구간별 경로 정보 계산 (폴백 메서드, 병렬 처리)
         
         Args:
             places: 장소 리스트
@@ -489,17 +730,19 @@ class GoogleMapsTool(BaseTool):
             mode: 이동 수단
             
         Returns:
-            구간별 경로 정보 리스트
+            (directions 리스트, 총 소요 시간, 총 거리)
         """
         directions = []
         
         if len(places) < 2:
-            return directions
+            return directions, 0, 0
         
         loop = asyncio.get_event_loop()
         
-        # 좌표 추출 (place 인덱스와 함께 저장)
+        # 좌표 추출 (병렬 처리)
         coordinates_with_places = []
+        geocode_tasks = []
+        
         for idx, place in enumerate(places):
             coords = place.get("coordinates")
             if coords and coords.get("lat") and coords.get("lng"):
@@ -508,94 +751,100 @@ class GoogleMapsTool(BaseTool):
                     "place": place,
                     "place_idx": idx
                 })
+                geocode_tasks.append(None)
             else:
                 address = place.get("address") or place.get("name")
-                if address and self.client:
-                    try:
-                        geocode_result = await loop.run_in_executor(
-                            None,
-                            self.client.geocode,
-                            address
-                        )
-                        if geocode_result:
-                            location = geocode_result[0]["geometry"]["location"]
-                            # 좌표 정보를 place에 업데이트
-                            place["coordinates"] = {
-                                "lat": location["lat"],
-                                "lng": location["lng"]
-                            }
-                            coordinates_with_places.append({
-                                "coord": (location["lat"], location["lng"]),
-                                "place": place,
-                                "place_idx": idx
-                            })
-                        else:
-                            # 좌표를 가져올 수 없으면 건너뛰기
-                            continue
-                    except Exception as e:
-                        # 에러가 발생해도 계속 진행 (나중에 에러 정보 포함)
-                        print(f"Warning: Geocoding failed for {address}: {e}")
-                        continue
+                if address:
+                    geocode_tasks.append((idx, self._geocode_address(address)))
                 else:
-                    # 좌표나 주소 정보가 없으면 건너뛰기
-                    continue
+                    geocode_tasks.append(None)
+        
+        # 병렬로 Geocoding 실행
+        geocode_results = {}
+        tasks_to_run = [(idx, task) for idx, task in enumerate(geocode_tasks) if task is not None]
+        if tasks_to_run:
+            results = await asyncio.gather(
+                *[task for _, task in tasks_to_run],
+                return_exceptions=True
+            )
+            for (idx, _), result in zip(tasks_to_run, results):
+                if not isinstance(result, Exception) and result:
+                    place = places[idx]
+                    place["coordinates"] = {"lat": result[0], "lng": result[1]}
+                    coordinates_with_places.append({
+                        "coord": result,
+                        "place": place,
+                        "place_idx": idx
+                    })
+        
+        # 좌표 순서대로 정렬
+        coordinates_with_places.sort(key=lambda x: x["place_idx"])
         
         if len(coordinates_with_places) < 2:
-            return directions
+            return directions, 0, 0
         
-        # 각 구간별로 Directions API 호출
-        for i in range(len(coordinates_with_places) - 1):
-            from_item = coordinates_with_places[i]
-            to_item = coordinates_with_places[i + 1]
-            
+        # 각 구간별로 Directions API 호출 (병렬 처리)
+        async def get_segment_direction(from_item, to_item):
+            """단일 구간의 Directions 정보 가져오기"""
             from_coord = from_item["coord"]
             to_coord = to_item["coord"]
             from_place = from_item["place"]
             to_place = to_item["place"]
             
-            try:
-                
-                # Directions API 호출
-                origin_str = f"{from_coord[0]},{from_coord[1]}"
-                dest_str = f"{to_coord[0]},{to_coord[1]}"
-                
-                def call_directions():
-                    try:
+            origin_str = f"{from_coord[0]},{from_coord[1]}"
+            dest_str = f"{to_coord[0]},{to_coord[1]}"
+            
+            for attempt in range(self._max_retries):
+                try:
+                    def call_directions():
                         return self.client.directions(
                             origin=origin_str,
                             destination=dest_str,
                             mode=mode
                         )
-                    except Exception as api_error:
-                        # API 호출 실패 시 예외를 다시 발생시켜 외부에서 처리
-                        raise api_error
-                
-                try:
+                    
                     directions_result = await loop.run_in_executor(None, call_directions)
-                except Exception as api_error:
-                    # API 호출 실패 (예: ZERO_RESULTS, INVALID_REQUEST 등)
-                    error_msg = str(api_error)
-                    directions.append({
-                        "from": from_place.get("name", "Unknown"),
-                        "to": to_place.get("name", "Unknown"),
-                        "from_address": from_place.get("address", ""),
-                        "to_address": to_place.get("address", ""),
-                        "duration": 0,
-                        "distance": 0,
-                        "duration_text": "",
-                        "distance_text": "",
-                        "steps": [],
-                        "mode": mode,
-                        "start_location": {"lat": from_coord[0], "lng": from_coord[1]},
-                        "end_location": {"lat": to_coord[0], "lng": to_coord[1]},
-                        "error": f"API 호출 실패: {error_msg}"
-                    })
-                    continue
-                
-                # API 호출 성공했지만 응답이 비어있는 경우 - 다른 모드로 폴백 시도
-                if not directions_result or len(directions_result) == 0:
-                    # walking 모드에서 경로를 찾지 못하면 transit 모드로 폴백 시도
-                    if mode == "walking":
+                    
+                    if directions_result and len(directions_result) > 0:
+                        route = directions_result[0]
+                        if route.get("legs") and len(route["legs"]) > 0:
+                            leg = route["legs"][0]
+                            
+                            duration = leg.get("duration", {}).get("value", 0)
+                            distance = leg.get("distance", {}).get("value", 0)
+                            
+                            steps = []
+                            for step in leg.get("steps", []):
+                                steps.append({
+                                    "instruction": step.get("html_instructions", ""),
+                                    "distance": step.get("distance", {}).get("value", 0),
+                                    "duration": step.get("duration", {}).get("value", 0),
+                                    "travel_mode": step.get("travel_mode", mode)
+                                })
+                            
+                            return {
+                                "from": from_place.get("name", "Unknown"),
+                                "to": to_place.get("name", "Unknown"),
+                                "from_address": from_place.get("address", ""),
+                                "to_address": to_place.get("address", ""),
+                                "duration": duration,
+                                "distance": distance,
+                                "duration_text": leg.get("duration", {}).get("text", ""),
+                                "distance_text": leg.get("distance", {}).get("text", ""),
+                                "steps": steps,
+                                "mode": mode,
+                                "start_location": {
+                                    "lat": leg.get("start_location", {}).get("lat", 0),
+                                    "lng": leg.get("start_location", {}).get("lng", 0)
+                                },
+                                "end_location": {
+                                    "lat": leg.get("end_location", {}).get("lat", 0),
+                                    "lng": leg.get("end_location", {}).get("lng", 0)
+                                }
+                            }
+                    
+                    # 폴백: walking -> transit
+                    if mode == "walking" and attempt == 0:
                         try:
                             def call_directions_transit():
                                 return self.client.directions(
@@ -605,54 +854,35 @@ class GoogleMapsTool(BaseTool):
                                 )
                             directions_result = await loop.run_in_executor(None, call_directions_transit)
                             if directions_result and len(directions_result) > 0:
-                                # transit 모드로 경로를 찾았지만, 원래 요청 모드는 walking
-                                pass  # 계속 진행하여 경로 정보 추출
-                        except Exception:
-                            pass  # 폴백 실패 시에도 계속 진행
-                
-                # API 호출 성공 - 응답 확인
-                if directions_result and len(directions_result) > 0:
-                    route = directions_result[0]
-                    if route.get("legs") and len(route["legs"]) > 0:
-                        leg = route["legs"][0]
-                        
-                        # 경로 정보 추출
-                        duration = leg.get("duration", {}).get("value", 0)
-                        distance = leg.get("distance", {}).get("value", 0)
-                        
-                        # 단계별 경로 정보 추출 (간소화)
-                        steps = []
-                        for step in leg.get("steps", []):
-                            steps.append({
-                                "instruction": step.get("html_instructions", ""),
-                                "distance": step.get("distance", {}).get("value", 0),
-                                "duration": step.get("duration", {}).get("value", 0),
-                                "travel_mode": step.get("travel_mode", mode)
-                            })
-                        
-                        directions.append({
-                            "from": from_place.get("name", "Unknown"),
-                            "to": to_place.get("name", "Unknown"),
-                            "from_address": from_place.get("address", ""),
-                            "to_address": to_place.get("address", ""),
-                            "duration": duration,
-                            "distance": distance,
-                            "duration_text": leg.get("duration", {}).get("text", ""),
-                            "distance_text": leg.get("distance", {}).get("text", ""),
-                            "steps": steps,
-                            "mode": mode,
-                            "start_location": {
-                                "lat": leg.get("start_location", {}).get("lat", 0),
-                                "lng": leg.get("start_location", {}).get("lng", 0)
-                            },
-                            "end_location": {
-                                "lat": leg.get("end_location", {}).get("lat", 0),
-                                "lng": leg.get("end_location", {}).get("lng", 0)
-                            }
-                        })
+                                route = directions_result[0]
+                                if route.get("legs") and len(route["legs"]) > 0:
+                                    leg = route["legs"][0]
+                                    duration = leg.get("duration", {}).get("value", 0)
+                                    distance = leg.get("distance", {}).get("value", 0)
+                                    return {
+                                        "from": from_place.get("name", "Unknown"),
+                                        "to": to_place.get("name", "Unknown"),
+                                        "from_address": from_place.get("address", ""),
+                                        "to_address": to_place.get("address", ""),
+                                        "duration": duration,
+                                        "distance": distance,
+                                        "duration_text": leg.get("duration", {}).get("text", ""),
+                                        "distance_text": leg.get("distance", {}).get("text", ""),
+                                        "steps": [],
+                                        "mode": "transit",
+                                        "start_location": {"lat": from_coord[0], "lng": from_coord[1]},
+                                        "end_location": {"lat": to_coord[0], "lng": to_coord[1]},
+                                        "error": "walking 모드에서 경로를 찾지 못해 transit 모드로 변경"
+                                    }
+                        except:
+                            pass
+                    
+                except Exception as e:
+                    if attempt < self._max_retries - 1:
+                        await asyncio.sleep(self._retry_delay * (attempt + 1))
+                        continue
                     else:
-                        # legs가 없거나 비어있는 경우
-                        directions.append({
+                        return {
                             "from": from_place.get("name", "Unknown"),
                             "to": to_place.get("name", "Unknown"),
                             "from_address": from_place.get("address", ""),
@@ -665,43 +895,54 @@ class GoogleMapsTool(BaseTool):
                             "mode": mode,
                             "start_location": {"lat": from_coord[0], "lng": from_coord[1]},
                             "end_location": {"lat": to_coord[0], "lng": to_coord[1]},
-                            "error": "경로를 찾을 수 없습니다 (legs가 비어있음)"
-                        })
-                else:
-                    # directions_result가 비어있는 경우
-                    directions.append({
-                        "from": from_place.get("name", "Unknown"),
-                        "to": to_place.get("name", "Unknown"),
-                        "from_address": from_place.get("address", ""),
-                        "to_address": to_place.get("address", ""),
-                        "duration": 0,
-                        "distance": 0,
-                        "duration_text": "",
-                        "distance_text": "",
-                        "steps": [],
-                        "mode": mode,
-                        "start_location": {"lat": from_coord[0], "lng": from_coord[1]},
-                        "end_location": {"lat": to_coord[0], "lng": to_coord[1]},
-                        "error": "경로를 찾을 수 없습니다 (API 응답이 비어있음)"
-                    })
-                        
-            except Exception as e:
-                # 해당 구간의 경로 계산 실패 시 기본 정보라도 추가
-                directions.append({
-                    "from": from_place.get("name", "Unknown"),
-                    "to": to_place.get("name", "Unknown"),
-                    "from_address": from_place.get("address", ""),
-                    "to_address": to_place.get("address", ""),
+                            "error": f"API 호출 실패: {str(e)}"
+                        }
+            
+            # 모든 재시도 실패
+            return {
+                "from": from_place.get("name", "Unknown"),
+                "to": to_place.get("name", "Unknown"),
+                "from_address": from_place.get("address", ""),
+                "to_address": to_place.get("address", ""),
+                "duration": 0,
+                "distance": 0,
+                "duration_text": "",
+                "distance_text": "",
+                "steps": [],
+                "mode": mode,
+                "start_location": {"lat": from_coord[0], "lng": from_coord[1]},
+                "end_location": {"lat": to_coord[0], "lng": to_coord[1]},
+                "error": "경로를 찾을 수 없습니다"
+            }
+        
+        # 모든 구간을 병렬로 처리
+        tasks = [
+            get_segment_direction(
+                coordinates_with_places[i],
+                coordinates_with_places[i + 1]
+            )
+            for i in range(len(coordinates_with_places) - 1)
+        ]
+        
+        directions = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 예외 처리
+        valid_directions = []
+        for d in directions:
+            if isinstance(d, Exception):
+                valid_directions.append({
+                    "from": "Unknown",
+                    "to": "Unknown",
                     "duration": 0,
                     "distance": 0,
-                    "duration_text": "",
-                    "distance_text": "",
-                    "steps": [],
-                    "mode": mode,
-                    "start_location": {"lat": from_coord[0], "lng": from_coord[1]},
-                    "end_location": {"lat": to_coord[0], "lng": to_coord[1]},
-                    "error": str(e)
+                    "error": str(d)
                 })
+            else:
+                valid_directions.append(d)
         
-        return directions
+        # 총 소요 시간 및 거리 계산
+        total_duration = sum(d.get("duration", 0) for d in valid_directions)
+        total_distance = sum(d.get("distance", 0) for d in valid_directions)
+        
+        return valid_directions, total_duration, total_distance
 
