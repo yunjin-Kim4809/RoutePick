@@ -161,6 +161,10 @@ async def execute_Agents():
         if input_data.get("location"):
             course["location"] = input_data["location"]
         
+        # reasoning 정보도 course에 추가 (챗봇에서 사용)
+        if course_result.get("reasoning"):
+            course["reasoning"] = course_result.get("reasoning")
+        
         # 코스 설명
         if course.get("course_description"):
             print("📝 코스 설명")
@@ -288,8 +292,13 @@ def chat():
 @app.route('/api/locations', methods=['GET'])
 def get_locations():
     global course
-    # response_data = course.get("places", [])
-    return jsonify(course)
+    # 코스 정보에 reasoning도 포함하여 반환
+    result = course.copy() if course else {}
+    
+    # reasoning이 별도로 저장되어 있다면 추가 (course_result에서 가져올 수도 있음)
+    # 현재는 course 객체에 포함되어 있다고 가정
+    
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(debug=True)

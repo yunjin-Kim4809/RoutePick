@@ -49,8 +49,9 @@ class SearchAgent(BaseAgent):
         # 2. Tavily 멀티 검색 (본문 데이터 확보)
         print(f"📡 [Step 2] Tavily를 통해 방대한 실시간 데이터 수집 중... (60개 후보 탐색)")
 
+        # Tavily 검색 결과 수 최적화 (20 -> 15로 줄여서 처리 시간 단축, 정확도 유지)
         tasks = [
-            self.search_tool.execute(query=step['search_query'], max_results=20) 
+            self.search_tool.execute(query=step['search_query'], max_results=15) 
             for step in strategy['course_structure']
         ]
         search_results = await asyncio.gather(*tasks)
@@ -87,17 +88,27 @@ class SearchAgent(BaseAgent):
             name = item.get('name')
             mention_counts[name] = mention_counts.get(name, 0) + 1
 
-        # 4. Google Maps 기반 검증
+        # 4. Google Maps 기반 검증 (병렬 처리로 속도 최적화)
+        print(f"🔍 [Step 3-2] Google Places API로 장소 검증 중... ({len(refined_data)}개)")
         category_buckets = {} # 카테고리별로 장소를 담을 바구니
         seen_names = set() # 중복 제거용
 
-        for item in refined_data:
-            # 이제 name뿐만 아니라 category도 item 안에 들어있습니다.
+        # 병렬 처리: 모든 Google Places API 호출을 동시에 실행
+        async def process_place_item(item):
             place_name = item.get('name')
-            place_category = item.get('category', '기타') # 기본값 설정
-            
+            place_category = item.get('category', '기타')
             clean_name = self._clean_place_name(place_name)
-            google_info = self._get_google_data(clean_name, location)
+            google_info = await asyncio.to_thread(self._get_google_data, clean_name, location)
+            return item, google_info, place_category
+        
+        # 모든 장소를 병렬로 처리
+        place_tasks = [process_place_item(item) for item in refined_data]
+        place_results = await asyncio.gather(*place_tasks)
+
+        # 결과 처리
+        for item, google_info, place_category in place_results:
+            # item에서 place_name 가져오기 (변수 스코프 문제 해결)
+            place_name = item.get('name')
     
             # 카테고리에 따른 유연한 필터링
             is_valid = False
@@ -156,7 +167,8 @@ class SearchAgent(BaseAgent):
                     "trust_score": trust_score,
                     "address": google_info['address'],
                     "source_url": item.get('source_url'),
-                    "map_url": map_url
+                    "map_url": map_url,
+                    "photo_url": google_info.get('photo_url')  # 사진 URL 추가
                 }
 
                 # [핵심 추가] 바구니에 담기
@@ -272,8 +284,8 @@ class SearchAgent(BaseAgent):
         """
         if not raw_data: return []
         
-        # 1. 배치 크기 설정
-        BATCH_SIZE = 6
+        # 1. 배치 크기 설정 (속도 최적화: 6 -> 8로 증가, 정확도 유지)
+        BATCH_SIZE = 8
         batches = [raw_data[i:i + BATCH_SIZE] for i in range(0, len(raw_data), BATCH_SIZE)]
         total_batches = len(batches)
         
@@ -727,26 +739,82 @@ class SearchAgent(BaseAgent):
                 
                 for place in res.get('results', []):
                     address = place.get("formatted_address", "")
+                    place_id = place.get("place_id")
                     
                     # 주소에 해당 지역이 포함되어 있는지 확인
                     if self._is_location_match(address, location_normalized, location):
+                        # 사진 URL 생성 (최적화: 기본 응답에서 먼저 확인, 없을 때만 Place Details 호출)
+                        photo_url = None
+                        detailed_address = address
+                        
+                        # 먼저 기본 응답에서 사진 확인 (Place Details 호출 없이)
+                        photos = place.get('photos', [])
+                        if photos and len(photos) > 0:
+                            photo_reference = photos[0].get('photo_reference')
+                            if photo_reference:
+                                photo_url = f"https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo_reference}&key={self.google_maps_api_key}"
+                        
+                        # 사진이 없을 때만 Place Details API 호출 (주소 정확도 향상을 위해)
+                        if not photo_url and place_id:
+                            try:
+                                details = self.gmaps.place(
+                                    place_id=place_id,
+                                    fields=['formatted_address', 'photos']
+                                )
+                                
+                                if details.get('result'):
+                                    result = details['result']
+                                    detailed_address = result.get('formatted_address', address)
+                                    
+                                    # 사진 정보 가져오기
+                                    photos = result.get('photos', [])
+                                    if photos and len(photos) > 0:
+                                        photo_reference = photos[0].get('photo_reference')
+                                        if photo_reference:
+                                            photo_url = f"https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo_reference}&key={self.google_maps_api_key}"
+                            except Exception as e:
+                                # Place Details 실패해도 기본 정보는 사용
+                                pass  # 에러 로그 제거로 속도 향상
+                        
                         return {
                             "name": place.get("name"), # 구글이 확인해준 진짜 가게 이름
                             "rating": place.get("rating", 0.0),
                             "reviews_count": place.get("user_ratings_total", 0),
-                            "address": address
+                            "address": detailed_address,
+                            "photo_url": photo_url  # 사진 URL 추가
                         }
                 
-                # 해당 지역에 맞는 결과가 없으면 첫 번째 결과도 사용하지 않음 (None 반환)
-                # 이렇게 하면 잘못된 지역의 장소가 제외됨
-                return None
+                # 해당 지역에 맞는 결과가 없으면 첫 번째 결과도 사용하되 경고 출력
+                # (너무 엄격한 필터링 방지)
+                first_place = res['results'][0]
+                address = first_place.get("formatted_address", "")
+                place_id = first_place.get("place_id")
+                
+                print(f"      ⚠️ 지역 검증 실패: '{name}' - 주소: {address}, 요청 지역: {location}")
+                
+                # 사진 URL 생성 (최적화: 기본 응답에서 먼저 확인)
+                photo_url = None
+                photos = first_place.get('photos', [])
+                if photos and len(photos) > 0:
+                    photo_reference = photos[0].get('photo_reference')
+                    if photo_reference:
+                        photo_url = f"https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo_reference}&key={self.google_maps_api_key}"
+                
+                # 지역 검증 실패했지만 기본 정보는 반환 (사용자가 확인 가능하도록)
+                return {
+                    "name": first_place.get("name"),
+                    "rating": first_place.get("rating", 0.0),
+                    "reviews_count": first_place.get("user_ratings_total", 0),
+                    "address": address if address else "주소 정보 확인 필요",
+                    "photo_url": photo_url
+                }
         except Exception as e:
             print(f"      ⚠️ 구글 API 에러: {e}")
             return None
         return None
     
     def _normalize_location(self, location: str) -> str:
-        """지역명 정규화 (서울특별시 -> 서울, 부산광역시 -> 부산)"""
+        """지역명 정규화 (서울특별시 -> 서울, 서울 성수동 -> 서울, 부산광역시 -> 부산)"""
         # 한국의 주요 도시 정규화
         location_map = {
             "서울특별시": "서울",
@@ -773,12 +841,27 @@ class SearchAgent(BaseAgent):
             "경상남도": "경남",
         }
         
+        # 먼저 전체 문자열로 매칭 시도
         normalized = location_map.get(location, location)
+        
+        # 매칭되지 않으면 복합 지역명 처리 (예: "서울 성수동" -> "서울")
+        if normalized == location:
+            # 주요 도시명으로 시작하는지 확인
+            for city_key, city_value in location_map.items():
+                if location.startswith(city_key.replace("특별시", "").replace("광역시", "").replace("시", "")):
+                    normalized = city_value
+                    break
+            # "서울", "부산" 등으로 시작하는 경우도 처리
+            for city_value in set(location_map.values()):
+                if location.startswith(city_value):
+                    normalized = city_value
+                    break
+        
         # 마지막으로 공백 제거
         return normalized.strip()
     
     def _is_location_match(self, address: str, normalized_location: str, original_location: str) -> bool:
-        """주소가 해당 지역에 속하는지 확인"""
+        """주소가 해당 지역에 속하는지 확인 (동/구 단위까지 고려)"""
         if not address:
             return False
         
@@ -801,9 +884,53 @@ class SearchAgent(BaseAgent):
                 if excluded_city.lower() in address_lower:
                     return False
         
-        # 정규화된 지역명 또는 원본 지역명이 주소에 포함되어 있는지 확인
+        # 1. 정규화된 지역명 또는 원본 지역명이 주소에 포함되어 있는지 확인
         if normalized_lower in address_lower or original_lower in address_lower:
             return True
+        
+        # 2. 복합 지역명 처리 (예: "서울 성수동" -> 주소에 "seoul"과 "seongdong" 또는 "성동" 확인)
+        # "서울 성수동" 같은 경우 주소에 "seoul"이 있으면 통과
+        if " " in original_location:
+            parts = original_location.split()
+            # 첫 번째 부분이 주요 도시명인지 확인
+            main_city = parts[0]
+            main_city_normalized = self._normalize_location(main_city)
+            
+            # 주소에 주요 도시명이 포함되어 있으면 통과
+            if main_city_normalized.lower() in address_lower:
+                return True
+            
+            # 동/구 단위 매칭 (예: "성수동" -> "seongdong-gu" 또는 "성동구")
+            if len(parts) > 1:
+                district = parts[1]
+                # 한글 동명을 영문으로 변환한 패턴 체크 (간단한 매칭)
+                district_map = {
+                    "성수동": ["seongdong", "seongsu", "성동"],
+                    "홍대": ["hongdae", "mapo", "마포"],
+                    "강남": ["gangnam", "강남"],
+                    "명동": ["myeongdong", "중구", "jung"],
+                    "이태원": ["itaewon", "용산", "yongsan"],
+                }
+                
+                if district in district_map:
+                    for pattern in district_map[district]:
+                        if pattern.lower() in address_lower:
+                            return True
+        
+        # 3. 영어 주소에서 한국 주요 도시 매칭
+        city_en_map = {
+            "서울": "seoul",
+            "부산": "busan",
+            "대구": "daegu",
+            "인천": "incheon",
+            "광주": "gwangju",
+            "대전": "daejeon",
+            "울산": "ulsan",
+        }
+        
+        if normalized_location in city_en_map:
+            if city_en_map[normalized_location] in address_lower:
+                return True
         
         # 지역명이 주소에 포함되어 있지 않으면 False
         return False
