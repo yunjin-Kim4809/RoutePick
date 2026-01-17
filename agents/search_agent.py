@@ -116,16 +116,13 @@ class SearchAgent(BaseAgent):
             
             print(f"  [정보 확인 ✅] 구글 이름: '{google_info.get('name')}', 주소: {google_info.get('address')}")
             
+
             # 1. 지역 필터링
-            if target_city or target_gu:
-                is_local = self._is_in_target_area(google_info.get('address_components', []), target_city, target_gu)
-                if not is_local:
-                    print(f"  [탈락 ❌] 이유: 지역 불일치 (요청 지역: '{location}')")
-                    continue
-            else:
-                if not self._is_location_match_fallback(google_info.get('address',''), location):
-                    print(f"  [탈락 ❌] 이유: 지역 불일치 (Fallback)")
-                    continue
+            # [최종 수정] 새로운 _is_in_target_area 함수를 사용하여 한 번에 검증
+            if not self._is_in_target_area(google_info.get('address_components', []), target_gu):
+                print(f"  [탈락 ❌] 이유: 지역 불일치 (요청 지역: '{location}')")
+                continue
+
             print(f"  [지역 통과 ✅]")
 
             # 2. 카테고리 보정
@@ -729,38 +726,60 @@ class SearchAgent(BaseAgent):
             return None
     
     # [신규] 지역 분석 및 검증을 위한 헬퍼 메소드들
+    # [최종 수정] 이 함수를 아래 내용으로 교체
     def _get_target_admin_areas(self, location_name: str) -> Tuple[str, str]:
-        """사용자가 입력한 지역명의 시/도 및 구/군 정보를 반환합니다."""
+        """[FINAL v4] Geocode 실패 시 LLM으로 상위 지역을 추론합니다."""
         try:
+            # 1. Geocoding 우선 시도
             geocode_result = self.gmaps.geocode(location_name)
-            if not geocode_result: return "", ""
-            city, gu = "", ""
-            for component in geocode_result[0]['address_components']:
-                types = component['types']
-                if 'administrative_area_level_1' in types: city = component['long_name']
-                if 'locality' in types or 'sublocality_level_1' in types:
-                    if not gu: gu = component['long_name']
-            return city, gu
-        except Exception:
-            return "", ""
+            if geocode_result:
+                # _parse_admin_areas_from_components는 별도 헬퍼 함수로 존재해야 함
+                city, gu = self._parse_admin_areas_from_components(geocode_result[0]['address_components'])
+                if gu: # '구' 정보가 있으면 성공
+                    print(f"   - Geocode 분석 성공: City='{city}', Gu='{gu}'")
+                    return city, gu
 
-    def _is_in_target_area(self, components: List[Dict], target_city: str, target_gu: str) -> bool:
-        """장소의 주소 구성요소가 타겟 지역에 속하는지 구조적으로 비교합니다."""
-        if not components: return False
-        place_city, place_gu = "", ""
+        except Exception as e:
+            print(f"      ⚠️ 지역 분석 중 예외 발생: {e}")
+            pass # 최종 실패 시 아래 fallback으로
+
+        print(f"   ❌ 모든 지역 분석 실패. 필터링을 건너뜁니다.")
+        return "", "" # 분석 실패 시 필터링을 건너뛰도록 빈 문자열 반환
+
+
+    def _parse_admin_areas_from_components(self, components: List[Dict]) -> Tuple[str, str]:
+        """address_components에서 '시/도'와 '시/군/구' 정보를 추출합니다."""
+        city, gu = "", ""
         for component in components:
             types = component['types']
-            if 'administrative_area_level_1' in types: place_city = component['long_name']
+            if 'administrative_area_level_1' in types:
+                city = component['long_name']
             if 'locality' in types or 'sublocality_level_1' in types:
-                if not place_gu: place_gu = component['long_name']
-        if target_city and place_city and target_city != place_city: return False
-        if target_gu and place_gu and target_gu != place_gu: return False
-        return True
+                if not gu: gu = component['long_name']
+        return city, gu
+    
 
-    def _is_location_match_fallback(self, address: str, original_location: str) -> bool:
-        """지역 분석 실패 시 사용하는 문자열 기반의 간단한 지역 검증."""
-        if not address: return False
-        return original_location.lower() in address.lower()
+    # [최종 수정] 이 함수를 아래 내용으로 교체
+    def _is_in_target_area(self, components: List[Dict], target_gu: str) -> bool:
+        """[FINAL] 장소의 주소에 핵심 지역 키워드가 포함되어 있는지 확인합니다."""
+        
+        # 주소 컴포넌트 전체를 하나의 문자열로 합침 (한글/영문 모두 포함)
+        full_address_text = " ".join(
+            f"{comp.get('long_name', '')} {comp.get('short_name', '')}" 
+            for comp in components
+        ).lower()
+
+        # target_gu (핵심 키워드)가 주소에 포함되어 있으면 통과
+        if target_gu.lower() in full_address_text:
+            return True
+        
+        # 예외 처리: 'Gangneung-si' vs '강릉시' 처럼 하이픈/접미사 차이로 실패하는 경우 대비
+        clean_target = target_gu.lower().replace('-si', '').replace('-gu', '').strip()
+        if clean_target in full_address_text:
+            return True
+
+        return False
+
 
     
     def _calculate_trust_score_v4(self, google_rating: float, google_reviews: int, content: str, category: str, mention_count: int) -> float:

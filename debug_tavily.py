@@ -22,7 +22,7 @@ async def main():
         # "theme": "비 오는 날 성수동 실내 데이트",
         # "location": "서울 성수동"
         "theme": "여자친구와의 감성적인 데이트",
-        "location": "서울 혜화"
+        "location": "강릉"
     }
     
     # 3. 실행
