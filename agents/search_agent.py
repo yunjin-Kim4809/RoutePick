@@ -712,7 +712,7 @@ class SearchAgent(BaseAgent):
         return clean_name
     
     def _get_google_data(self, name: str, location: str) -> Optional[Dict]:
-        """Google Places API 검증 (이름 정제 로직 포함)"""
+        """Google Places API 검증 (이름 정제 로직 포함) - 지역 검증 추가"""
         try:
             # [수정] 지저분한 이름을 청소하고 검색
             search_name = self._clean_place_name(name)
@@ -722,17 +722,91 @@ class SearchAgent(BaseAgent):
             
             res = self.gmaps.places(query=query)
             if res.get('results'):
-                place = res['results'][0]
-                return {
-                    "name": place.get("name"), # 구글이 확인해준 진짜 가게 이름
-                    "rating": place.get("rating", 0.0),
-                    "reviews_count": place.get("user_ratings_total", 0),
-                    "address": place.get("formatted_address")
-                }
+                # 지역 검증: 주소에 해당 지역이 포함되어 있는지 확인
+                location_normalized = self._normalize_location(location)
+                
+                for place in res.get('results', []):
+                    address = place.get("formatted_address", "")
+                    
+                    # 주소에 해당 지역이 포함되어 있는지 확인
+                    if self._is_location_match(address, location_normalized, location):
+                        return {
+                            "name": place.get("name"), # 구글이 확인해준 진짜 가게 이름
+                            "rating": place.get("rating", 0.0),
+                            "reviews_count": place.get("user_ratings_total", 0),
+                            "address": address
+                        }
+                
+                # 해당 지역에 맞는 결과가 없으면 첫 번째 결과도 사용하지 않음 (None 반환)
+                # 이렇게 하면 잘못된 지역의 장소가 제외됨
+                return None
         except Exception as e:
             print(f"      ⚠️ 구글 API 에러: {e}")
             return None
         return None
+    
+    def _normalize_location(self, location: str) -> str:
+        """지역명 정규화 (서울특별시 -> 서울, 부산광역시 -> 부산)"""
+        # 한국의 주요 도시 정규화
+        location_map = {
+            "서울특별시": "서울",
+            "서울시": "서울",
+            "부산광역시": "부산",
+            "부산시": "부산",
+            "대구광역시": "대구",
+            "대구시": "대구",
+            "인천광역시": "인천",
+            "인천시": "인천",
+            "광주광역시": "광주",
+            "광주시": "광주",
+            "대전광역시": "대전",
+            "대전시": "대전",
+            "울산광역시": "울산",
+            "울산시": "울산",
+            "경기도": "경기",
+            "강원도": "강원",
+            "충청북도": "충북",
+            "충청남도": "충남",
+            "전라북도": "전북",
+            "전라남도": "전남",
+            "경상북도": "경북",
+            "경상남도": "경남",
+        }
+        
+        normalized = location_map.get(location, location)
+        # 마지막으로 공백 제거
+        return normalized.strip()
+    
+    def _is_location_match(self, address: str, normalized_location: str, original_location: str) -> bool:
+        """주소가 해당 지역에 속하는지 확인"""
+        if not address:
+            return False
+        
+        # 주소를 소문자로 변환하여 비교 (대소문자 무시)
+        address_lower = address.lower()
+        normalized_lower = normalized_location.lower()
+        original_lower = original_location.lower()
+        
+        # 한국의 주요 도시별 검증 (특수 케이스 - 제외 도시 먼저 확인)
+        # 예: "서울"인데 주소에 "부산"이나 "경주"가 포함되어 있으면 False
+        exclusion_map = {
+            "서울": ["부산", "대구", "인천", "광주", "대전", "울산", "경주", "제주"],
+            "부산": ["서울", "대구", "인천", "광주", "대전", "울산", "경주", "제주"],
+            "경주": ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "제주"],
+        }
+        
+        # 제외 도시가 주소에 포함되어 있으면 False 반환
+        if normalized_location in exclusion_map:
+            for excluded_city in exclusion_map[normalized_location]:
+                if excluded_city.lower() in address_lower:
+                    return False
+        
+        # 정규화된 지역명 또는 원본 지역명이 주소에 포함되어 있는지 확인
+        if normalized_lower in address_lower or original_lower in address_lower:
+            return True
+        
+        # 지역명이 주소에 포함되어 있지 않으면 False
+        return False
     
     def _calculate_trust_score_v3(self, google_rating: float, google_reviews: int, content: str, category: str, mention_count: int) -> float:
         """

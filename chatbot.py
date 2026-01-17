@@ -1,14 +1,11 @@
 import os
 import json
 from openai import OpenAI
-from dotenv import load_dotenv
+from config.config import Config
 # from langchain.prompts import PromptTemplate
 
-# .env 파일 로드
-load_dotenv()
-
-# OpenAI 클라이언트 초기화
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenAI 클라이언트 초기화 (Config에서 API 키 가져오기)
+client = OpenAI(api_key=Config.OPENAI_API_KEY)
 
 """
 TODO:

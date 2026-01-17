@@ -4,8 +4,14 @@
     <meta charset="UTF-8">
     <title>RoutePick Chat & Map Service</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <!-- Google Maps API (YOUR_API_KEY 입력 필요) -->
-    <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&v=weekly" async defer></script>
+    <!-- Google Maps API (.env 파일의 GOOGLE_MAPS_API_KEY 사용) -->
+    {% if google_maps_api_key %}
+    <script src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&v=weekly&loading=async" async defer></script>
+    {% else %}
+    <script>
+        console.error("⚠️ Google Maps API 키가 설정되지 않았습니다. .env 파일에 GOOGLE_MAPS_API_KEY를 추가하세요.");
+    </script>
+    {% endif %}
 </head>
 <body>
     <div class="main-container">

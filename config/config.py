@@ -6,16 +6,14 @@
 import os
 from dotenv import load_dotenv
 from typing import Dict, Any
-from dotenv import load_dotenv
 
-# .env 파일에서 환경 변수 로드
+# .env 파일에서 환경 변수 로드 (모듈 최상위에서 한 번만 실행)
 load_dotenv()
 
 
 class Config:
     """전역 설정 클래스"""
     
-    load_dotenv()
     # API Keys
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
     GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")

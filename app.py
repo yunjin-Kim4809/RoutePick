@@ -157,6 +157,9 @@ async def execute_Agents():
         
         global course
         course = course_result.get("course", {})
+        # location 정보 추가 (지오코딩에 사용)
+        if input_data.get("location"):
+            course["location"] = input_data["location"]
         
         # 코스 설명
         if course.get("course_description"):
@@ -251,14 +254,22 @@ def reset():
 
 @app.route('/call-agent')
 def call_agents():
+    # session에서 실제 입력값 가져와서 input_data 업데이트
+    global input_data
+    if 'selections' in session and len(session['selections']) >= len(messages):
+        selections = session['selections']
+        input_data = dict(zip(input_data.keys(), selections))
+    
     session.pop('selections', None)
     threading.Thread(target=run_agent_task).start()
     return render_template('loading.html')
 
 @app.route('/chat-map')
 def chat_page():
+    # .env 파일에서 Google Maps API 키 가져오기 (Config는 이미 상단에서 import됨)
     return render_template('chat.html',
-                           course=course)
+                           course=course,
+                           google_maps_api_key=Config.GOOGLE_MAPS_API_KEY)
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
