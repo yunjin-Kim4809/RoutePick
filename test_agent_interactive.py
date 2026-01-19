@@ -205,14 +205,10 @@ async def main():
         print()
 
         # ============================================================
-        # [추가] Step 2: RoutingAgent 실행 (지리적 정보 보강)
+        # [최종 수정] Step 2: RoutingAgent - 하이브리드 군집 분석
         # ============================================================
         
-        # ------------------------------------------------------------
-        print("\n🗺️ [Step 2] RoutingAgent: 지리적 정보 분석 및 좌표 확보 중...")
         config = Config.get_agent_config()
-
-
         # 키 매핑 보장 로직 추가
         # ------------------------------------------------------------
         # Config는 'google_maps_api_key'라는 이름으로 키를 주는데,
@@ -222,36 +218,54 @@ async def main():
         # ------------------------------------------------------------
 
         routing_agent = RoutingAgent(config=config)
-
-        # [수정] 한글 입력을 구글 API용 영문 상수로 변환
-        mode_mapping = {
-            "도보": "walking",
-            "자동차": "driving",
-            "지하철": "transit",
-            "버스": "transit",
-            "자전거": "bicycling"
-        }
-        transport_mode = mode_mapping.get(user_data["transportation"], "walking") # 기본값 도보
-
-        routing_input = {
-            "places": places,
-            "mode": transport_mode, # ⬅️ 번역된 영문 전달
-            "optimize_waypoints": False 
-        }
-
-        route_info_result = await routing_agent.execute(routing_input)
         
-        # [수정] 아래 로직으로 교체하세요. 'or' 연산자가 아니라 if-else로 확실히!
-        enriched_places = route_info_result.get("optimized_route", [])
+        places_for_planning = places # 기본값은 전체 후보군
+
+        # 이동 수단과 지역 "구체성"에 따라 군집화 여부 결정
+        should_cluster = False
+        location_input = user_data["location"]
         
-        # 만약 루팅 결과가 비어있으면 원본 장소 리스트(Step 1 결과)로 복구!
-        if not enriched_places:
-            print("⚠️  루팅 에이전트가 결과를 반환하지 못했습니다. 원본 데이터를 사용합니다.")
-            enriched_places = places
+        # 1. '도보' 이동은 무조건 군집 분석 실행  
+        if user_data["transportation"] == "도보":
+            should_cluster = True
+            print("\n- '도보' 이동이므로, 밀집 지역을 찾기 위해 군집 분석을 실행합니다.")
+        
+        # 2. 도보가 아닐 경우, 마지막 단어로 판단
         else:
-            print(f"✅ 지리 정보 보강 완료. ({len(enriched_places)}개 장소)")
+            location_parts = location_input.split()
+            if location_parts: # 입력이 비어있지 않다면
+                last_word = location_parts[-1]
+                
+                # 광역 지역 이름 리스트
+                large_areas = ["서울", "부산", "인천", "대구", "대전", "광주", "울산", "제주", "제주도", 
+                               "강원", "강원도", "경기", "경기도", "충청북도", "충북", "충청남도", "충남",
+                               "전라북도", "전북", "전라남도", "전남", "경상북도", "경북", "경상남도", "경남"]
+                
+                # 마지막 단어가 광역 지역 이름이고, 전체 단어가 1개일 때만 군집 분석 실행
+                if len(location_parts) == 1 and last_word in large_areas:
+                    should_cluster = True
+                    print(f"\n- '{location_input}'은(는) 넓은 지역으로 판단되어, 핵심 권역을 찾기 위해 군집 분석을 실행합니다.")
+        
+        if should_cluster:
+            clustered_places = routing_agent.cluster_places(places, user_data["transportation"])
             
-        # ------------------------------------------------------------
+            if len(clustered_places) < 5 and len(places) > len(clustered_places):
+                print("   - 군집 내 장소 수가 너무 적어, 원본 후보군에서 상위 장소를 추가합니다.")
+                clustered_places.extend(p for p in places if p not in clustered_places)
+                final_places = []
+                seen = set()
+                for p in clustered_places:
+                    if p['name'] not in seen:
+                        final_places.append(p)
+                        seen.add(p['name'])
+                places_for_planning = final_places[:15]
+            else:
+                places_for_planning = clustered_places
+        else:
+            print(f"\n🗺️ [Step 2] 군집 분석 건너뛰기: '{location_input}'은(는) 구체적인 지역으로 간주합니다.")
+            places_for_planning = places
+
+        print(f"   -> PlanningAgent에게 {len(places_for_planning)}개의 후보 장소를 전달합니다.")
 
         # ============================================================
         # Step 3: PlanningAgent 실행 (코스 제작)
@@ -279,9 +293,9 @@ async def main():
                 "total_duration": 360  # 6시간
             }
         
-        # [수정] 검색된 원본 'places' 대신 루팅을 거친 'enriched_places'를 넘김
+        # 검색된 원본 'places' 대신 군집을 거친 places_for_planning
         planning_input = {
-            "places": enriched_places, 
+            "places": places_for_planning, 
             "user_preferences": user_preferences,
             "time_constraints": time_constraints
         }
@@ -322,28 +336,57 @@ async def main():
             return
         
         # ============================================================
-        # [Step 4] 선정된 장소들에 대해 실제 이동 시간/거리를 한 번 더 루팅 
-        # [Step 4] 최종 결과 출력 및 동선 확정
+        # Step 4: RoutingAgent - 최종 동선 최적화 
         # ============================================================
-        print()
-        print("=" * 70)
-        print("✨ RoutePick: 당신만을 위한 맞춤형 코스 제작 완료!")
-        print("=" * 70)
+        print("\n🚗 [Step 4] RoutingAgent: 최종 동선 최적화 및 이동 시간 계산 중...")
         
         course = course_result.get("course", {})
-        places_list = course.get("places", []) # 플래너가 선택한 3~4개 장소
+        places_list = course.get("places", []) 
+        
+        if not places_list:
+            print("❌ PlanningAgent가 코스를 생성하지 못했습니다.")
+            return   
+             
+        # [디버깅] PlanningAgent가 실제로 어떤 장소들을 선택했는지 확인
+        print("\n--- [디버깅] PlanningAgent가 선택한 장소 리스트 ---")
+        for p in places_list:
+            print(f"- {p.get('name')}")
+        print("--------------------------------------------------\n")
+        
         estimated_duration = course.get("estimated_duration", {})
         
-        # [최종 루팅] 선택된 장소들에 대해 실제 이동 시간과 최적 순서를 구글 맵에 다시 물어봅니다.
-        # transport_mode는 위에서 한글->영문 변환된 변수를 사용합니다.
+        mode_mapping = {
+            "도보": "walking",
+            "자동차": "driving",
+            "지하철": "transit",
+            "버스": "transit",
+            "자전거": "bicycling"
+        }
+
+        transport_mode = mode_mapping.get(user_data["transportation"], "walking") # 기본값 도보
+
         final_routing_input = {
             "places": places_list,
-            "mode": transport_mode, 
+            "mode": transport_mode, # 번역된 영문 전달
             "optimize_waypoints": True # 최종 코스이므로 구글이 최단 동선으로 재배열함
         }
+
         final_route = await routing_agent.execute(final_routing_input)
-        
-        optimized_places = final_route.get("optimized_route", places_list)
+
+        # ============================================================
+        # Step 5: 최종 결과 종합 및 재구성
+        # ============================================================
+        print("\n" + "=" * 70)
+        print("✨ RoutePick: 당신만을 위한 맞춤형 코스 제작 완료!")
+        print("=" * 70)
+
+        optimized_places = final_route.get("optimized_route", [])
+
+        # [수정] 만약 optimized_places가 비어있다면, PlanningAgent의 원본을 사용
+        if not optimized_places:
+            print("   ⚠️ RoutingAgent가 순서 최적화에 실패했습니다. PlanningAgent의 순서를 따릅니다.")
+            optimized_places = places_list
+
         directions = final_route.get("directions", [])
 
         # 1. 코스 개요 출력
@@ -355,7 +398,7 @@ async def main():
 
         # 2. 상세 일정 출력
         if optimized_places:
-            print("📍 실제 구글 맵 경로 기반 방문 일정")
+            print("📍 실제 구글 맵 경로 기반 방문 일정") 
             print("-" * 70)
             
             for idx, place in enumerate(optimized_places, 1):
@@ -371,18 +414,22 @@ async def main():
                 
                 print(f"\n{idx}. {place.get('name', '알 수 없음')}")
                 print(f"   📌 카테고리: {place.get('category', 'N/A')} | ⭐ 평점: {place.get('rating', 'N/A')}")
-                print(f"   ⏱️  장소 체류 시간: {stay_time}분")
+                print(f"   ⏱️  예상 체류 시간: {stay_time}분")
                 print(f"   📍 주소: {place.get('address', '주소 정보 없음')}")
                 
-                # 홍겸님이 마이닝한 추천 근거 URL 출력
+                # 추천 근거 및 지도 URL 출력
                 if place.get('source_url'):
                     print(f"   🔗 상세 추천 근거: {place['source_url']}")
+                if place.get('map_url'):
+                    print(f"   🗺️  위치 확인 (지도): {place['map_url']}")                    
                 
-                # [중요] 다음 장소까지의 실제 이동 시간 출력 (Directions API 결과 반영)
-                if idx <= len(directions):
-                    d = directions[idx-1]
-                    print(f"\n   🚗 [이동] 다음 장소까지 약 {d.get('duration_text')} ({d.get('distance_text')}) 소요")
-            
+                # 다음 장소까지의 실제 이동 시간 출력
+                if idx < len(optimized_places): # 마지막 장소에서는 출력하지 않음
+                    # directions 리스트는 구간(leg) 정보이므로, optimized_places보다 1개 적음
+                    if idx <= len(directions):
+                        d = directions[idx-1]
+                        print(f"\n   🚗 [다음 장소로 이동] 약 {d.get('duration_text')} 소요 ({d.get('distance_text')})")
+
             print()
 
         # 3. 선정 이유 (PlanningAgent의 논리)
