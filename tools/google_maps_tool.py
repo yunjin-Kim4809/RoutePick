@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import asyncio
 import googlemaps
-from functools import lru_cache
 from .base_tool import BaseTool
 
 
@@ -30,7 +29,7 @@ class GoogleMapsTool(BaseTool):
         if self.api_key:
             try:
                 self.client = googlemaps.Client(key=self.api_key)
-                print(f"✅ Google Maps Client 초기화 성공") # 확인용
+                print(f"✅ Google Maps Client 초기화 성공")
             except Exception as e:
                 print(f"❌ Google Maps Client 초기화 실패: {e}")
                 self.client = None
@@ -116,8 +115,7 @@ class GoogleMapsTool(BaseTool):
             # 최적화된 순서로 장소 재배열
             optimized_places = [places[i] for i in optimized_order]
             
-            # 최적화된 경로로 Directions API 호출 (한 번의 호출로 전체 경로 정보 획득)
-            # 이미 최적화된 순서를 알고 있으므로, 단일 Directions API 호출로 효율성 향상
+            # 최적화된 경로로 Directions API 호출
             directions, total_duration, total_distance = await self._get_optimized_route_directions(
                 optimized_places, origin, destination, mode
             )
@@ -132,11 +130,11 @@ class GoogleMapsTool(BaseTool):
             }
             
         except Exception as e:
-            # [수정] 실패하더라도 최소한의 데이터(순서대로 정렬된 리스트)는 돌려줍니다.
+            # 실패하더라도 최소한의 데이터는 반환하여 시스템이 멈추지 않게 함
             print(f"⚠️  Google Maps API 실행 중 오류 발생 (무시하고 진행): {e}")
             return {
-                "success": True, # ⬅️ 실패해도 True로 반환하여 시스템이 멈추지 않게 함
-                "optimized_route": places, # 원본이라도 반환
+                "success": True,
+                "optimized_route": places,
                 "total_duration": 0,
                 "total_distance": 0,
                 "directions": [],
@@ -381,7 +379,19 @@ class GoogleMapsTool(BaseTool):
             if len(waypoints) <= 1:
                 return list(range(len(coordinates)))
             
-            # Directions API 호출 (optimize_waypoints=True)
+            # Distance Matrix API를 사용한 최적화 시도 (실제 이동 수단 기반)
+            if self.client and len(coordinates) <= 25:
+                try:
+                    optimized_order = await self._optimize_with_distance_matrix(
+                        coordinates, origin_coords, dest_coords, mode
+                    )
+                    if optimized_order:
+                        return optimized_order
+                except Exception as e:
+                    print(f"⚠️  Distance Matrix API 최적화 실패: {e}")
+                    # 폴백: Directions API의 optimize_waypoints 사용
+            
+            # Directions API 호출 (optimize_waypoints=True) - 폴백
             loop = asyncio.get_event_loop()
             
             # lambda 대신 함수 정의로 변경 (클로저 문제 방지)
@@ -456,6 +466,169 @@ class GoogleMapsTool(BaseTool):
             if destination and destination.get("coordinates"):
                 dest_coords = (destination["coordinates"]["lat"], destination["coordinates"]["lng"])
             return self._nearest_neighbor_optimization(coordinates, origin_coords, dest_coords)
+    
+    async def _optimize_with_distance_matrix(
+        self,
+        coordinates: List[Tuple[float, float]],
+        origin_coords: Optional[Tuple[float, float]],
+        dest_coords: Optional[Tuple[float, float]],
+        mode: str
+    ) -> Optional[List[int]]:
+        """
+        Distance Matrix API를 사용하여 실제 이동 수단 기반 거리/시간으로 최적화
+        
+        Args:
+            coordinates: 좌표 리스트
+            origin_coords: 출발지 좌표
+            dest_coords: 도착지 좌표
+            mode: 이동 수단
+            
+        Returns:
+            최적화된 순서의 인덱스 리스트 또는 None
+        """
+        if not self.client or len(coordinates) == 0:
+            return None
+        
+        try:
+            # 모든 좌표를 문자열로 변환
+            all_coords = []
+            
+            # 출발지 추가
+            if origin_coords:
+                all_coords.append(f"{origin_coords[0]},{origin_coords[1]}")
+            
+            # 경유지 추가
+            for coord in coordinates:
+                all_coords.append(f"{coord[0]},{coord[1]}")
+            
+            # 도착지 추가
+            if dest_coords:
+                all_coords.append(f"{dest_coords[0]},{dest_coords[1]}")
+            
+            # Distance Matrix API 호출 (최대 25개 지점 지원)
+            if len(all_coords) > 25:
+                # 25개 초과 시 첫 25개만 사용
+                all_coords = all_coords[:25]
+            
+            loop = asyncio.get_event_loop()
+            distance_matrix = await loop.run_in_executor(
+                None,
+                lambda: self.client.distance_matrix(
+                    origins=all_coords,
+                    destinations=all_coords,
+                    mode=mode
+                )
+            )
+            
+            if not distance_matrix or distance_matrix.get("status") != "OK":
+                return None
+            
+            rows = distance_matrix.get("rows", [])
+            if not rows:
+                return None
+            
+            # 거리/시간 행렬 구성
+            distance_matrix_data = {}
+            duration_matrix_data = {}
+            
+            origin_offset = 1 if origin_coords else 0
+            
+            for i, row in enumerate(rows):
+                elements = row.get("elements", [])
+                for j, element in enumerate(elements):
+                    if element.get("status") == "OK":
+                        distance = element.get("distance", {}).get("value", float('inf'))
+                        duration = element.get("duration", {}).get("value", float('inf'))
+                        
+                        # 출발지/도착지 인덱스 조정
+                        from_idx = i - origin_offset
+                        to_idx = j - origin_offset
+                        
+                        # 경유지 인덱스만 저장 (0 이상이고 coordinates 길이 미만)
+                        if from_idx >= 0 and from_idx < len(coordinates) and \
+                           to_idx >= 0 and to_idx < len(coordinates):
+                            distance_matrix_data[(from_idx, to_idx)] = distance
+                            duration_matrix_data[(from_idx, to_idx)] = duration
+            
+            # 출발지 결정
+            start_idx = 0
+            if origin_coords:
+                # 출발지에서 가장 가까운 경유지 찾기
+                min_duration = float('inf')
+                origin_row_idx = 0  # 출발지는 첫 번째 행
+                if origin_row_idx < len(rows):
+                    elements = rows[origin_row_idx].get("elements", [])
+                    for j, element in enumerate(elements):
+                        if element.get("status") == "OK":
+                            to_idx = j - origin_offset
+                            if to_idx >= 0 and to_idx < len(coordinates):
+                                duration = element.get("duration", {}).get("value", float('inf'))
+                                if duration < min_duration:
+                                    min_duration = duration
+                                    start_idx = to_idx
+            
+            # Nearest Neighbor 알고리즘 (실제 거리/시간 기반)
+            unvisited = set(range(len(coordinates)))
+            optimized_order = [start_idx]
+            unvisited.remove(start_idx)
+            
+            current = start_idx
+            
+            while unvisited:
+                nearest_idx = None
+                min_cost = float('inf')
+                
+                for idx in unvisited:
+                    # 도착지가 지정되어 있고, 남은 노드가 1개이고 그것이 도착지와 가까운지 확인
+                    if dest_coords and len(unvisited) == 1:
+                        last_coord = coordinates[idx]
+                        if abs(last_coord[0] - dest_coords[0]) < 0.0001 and \
+                           abs(last_coord[1] - dest_coords[1]) < 0.0001:
+                            nearest_idx = idx
+                            break
+                    
+                    # 실제 이동 시간을 우선적으로 사용, 없으면 거리 사용
+                    key = (current, idx)
+                    if key in duration_matrix_data:
+                        cost = duration_matrix_data[key]
+                    elif key in distance_matrix_data:
+                        cost = distance_matrix_data[key]
+                    else:
+                        # 데이터가 없으면 Haversine 거리 사용
+                        import math
+                        coord1 = coordinates[current]
+                        coord2 = coordinates[idx]
+                        R = 6371000
+                        phi1 = math.radians(coord1[0])
+                        phi2 = math.radians(coord2[0])
+                        delta_phi = math.radians(coord2[0] - coord1[0])
+                        delta_lambda = math.radians(coord2[1] - coord1[1])
+                        a = math.sin(delta_phi / 2) ** 2 + \
+                            math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+                        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                        cost = R * c
+                    
+                    if cost < min_cost:
+                        min_cost = cost
+                        nearest_idx = idx
+                
+                if nearest_idx is not None:
+                    optimized_order.append(nearest_idx)
+                    unvisited.remove(nearest_idx)
+                    current = nearest_idx
+                else:
+                    # nearest_idx가 None이면 남은 노드 중 첫 번째 선택
+                    remaining = list(unvisited)
+                    if remaining:
+                        optimized_order.append(remaining[0])
+                        unvisited.remove(remaining[0])
+                        current = remaining[0]
+            
+            return optimized_order
+            
+        except Exception as e:
+            print(f"⚠️  Distance Matrix API 최적화 중 오류: {e}")
+            return None
     
     def _nearest_neighbor_optimization(
         self,
@@ -624,7 +797,6 @@ class GoogleMapsTool(BaseTool):
         origin_str = f"{origin_coord[0]},{origin_coord[1]}"
         dest_str = f"{dest_coord[0]},{dest_coord[1]}"
         
-        # 재시도 로직 포함
         for attempt in range(self._max_retries):
             try:
                 def call_directions():

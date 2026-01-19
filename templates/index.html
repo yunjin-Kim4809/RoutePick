@@ -54,6 +54,154 @@
             font-size: 16px;
         }
 
+        input[type="date"] {
+            padding: 10px;
+            border: 2px solid #007bff;
+            border-radius: 6px;
+            width: 300px;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator {
+            cursor: pointer;
+            font-size: 18px;
+            opacity: 0.7;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator:hover {
+            opacity: 1;
+        }
+
+        .date-input-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .date-range-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+
+        .date-range-item {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+        }
+
+        .date-range-item label {
+            font-size: 14px;
+            color: #666;
+            min-width: 60px;
+            text-align: left;
+        }
+
+        .date-range-item input[type="date"] {
+            width: 250px;
+            margin-bottom: 0;
+        }
+
+        .date-separator {
+            font-size: 18px;
+            color: #007bff;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+
+        .calendar-icon {
+            font-size: 24px;
+            color: #007bff;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .transportation-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        .transportation-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: pointer;
+            background: white;
+        }
+
+        .transportation-option:hover {
+            background: #f0f0f0;
+        }
+
+        .transportation-option input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .transportation-option label {
+            flex: 1;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 0;
+        }
+
+        .transportation-option-other {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: pointer;
+            background: white;
+        }
+
+        .transportation-option-other:hover {
+            background: #f0f0f0;
+        }
+
+        .transportation-option-other input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .transportation-option-other label {
+            cursor: pointer;
+            font-size: 16px;
+            margin: 0;
+            min-width: 40px;
+        }
+
+        .transportation-option-other input[type="text"] {
+            flex: 1;
+            padding: 8px;
+            border: 2px solid #007bff;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
         .result-item {
             text-align: left;
             background: #eee;
@@ -101,9 +249,23 @@
 
             {% elif step == 4 %}
             <div class="input-group">
-                <input type="text" id="textInput" placeholder="예시: 2024-12-25">
-                <button type="button" onclick="sendText()">확인</button>
-                <button type="button" onclick="send('', 'input')">건너뛰기</button>
+                <div class="date-range-wrapper">
+                    <div class="date-range-item">
+                        <span class="calendar-icon">📅</span>
+                        <label for="startDate">시작일:</label>
+                        <input type="date" id="startDate">
+                    </div>
+                    <div class="date-separator">~</div>
+                    <div class="date-range-item">
+                        <span class="calendar-icon">📅</span>
+                        <label for="endDate">종료일:</label>
+                        <input type="date" id="endDate">
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" onclick="sendDateRange()">확인</button>
+                    <button type="button" onclick="send('', 'input')">건너뛰기</button>
+                </div>
             </div>
             
             {% elif step == 5 %}
@@ -115,9 +277,33 @@
 
             {% elif step == 6 %}
             <div class="input-group">
-                <input type="text" id="textInput" placeholder="예시: 도보, 지하철, 버스, 자동차">
-                <button type="button" onclick="sendText()">확인</button>
-                <button type="button" onclick="send('도보', 'input')">건너뛰기</button>
+                <div class="transportation-options">
+                    <div class="transportation-option" onclick="toggleCheckbox('walk')">
+                        <input type="checkbox" id="walk" value="도보" onchange="updateTransportation()">
+                        <label for="walk">도보</label>
+                    </div>
+                    <div class="transportation-option" onclick="toggleCheckbox('subway')">
+                        <input type="checkbox" id="subway" value="지하철" onchange="updateTransportation()">
+                        <label for="subway">지하철</label>
+                    </div>
+                    <div class="transportation-option" onclick="toggleCheckbox('bus')">
+                        <input type="checkbox" id="bus" value="버스" onchange="updateTransportation()">
+                        <label for="bus">버스</label>
+                    </div>
+                    <div class="transportation-option" onclick="toggleCheckbox('car')">
+                        <input type="checkbox" id="car" value="자동차" onchange="updateTransportation()">
+                        <label for="car">자동차</label>
+                    </div>
+                    <div class="transportation-option-other">
+                        <input type="checkbox" id="other" onchange="updateTransportation()">
+                        <label for="other" onclick="toggleCheckbox('other')">기타</label>
+                        <input type="text" id="customTransportInput" placeholder="이동수단을 입력해주세요" oninput="updateTransportation()" onclick="event.stopPropagation()">
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" onclick="sendTransportation()">확인</button>
+                    <button type="button" onclick="send('도보', 'input')">건너뛰기</button>
+                </div>
             </div>
             {% endif %}
         </form>
@@ -138,6 +324,135 @@
                 }
                 send(val, "input");
             }
+
+            function sendDateRange() {
+                const startDate = document.getElementById("startDate");
+                const endDate = document.getElementById("endDate");
+                
+                if (startDate && endDate) {
+                    const startValue = startDate.value;
+                    const endValue = endDate.value;
+                    
+                    if (!startValue || !endValue) {
+                        alert("시작일과 종료일을 모두 선택해주세요!");
+                        return;
+                    }
+                    
+                    // 시작일이 종료일보다 늦으면 경고
+                    if (startValue > endValue) {
+                        alert("시작일은 종료일보다 이전이거나 같아야 합니다!");
+                        return;
+                    }
+                    
+                    // 날짜 범위를 "시작일~종료일" 형식으로 전송
+                    // 시작일과 종료일이 같으면 단일 날짜로 전송
+                    const dateRange = startValue === endValue ? startValue : `${startValue}~${endValue}`;
+                    send(dateRange, "input");
+                } else {
+                    // dateInput이 없는 경우 (다른 step) 기존 로직 사용
+                    sendText();
+                }
+            }
+
+            function toggleCheckbox(id) {
+                const checkbox = document.getElementById(id);
+                if (checkbox) {
+                    checkbox.checked = !checkbox.checked;
+                    updateTransportation();
+                }
+            }
+
+            function updateTransportation() {
+                // 체크박스 상태 업데이트 (UI 반응용)
+                const otherCheckbox = document.getElementById("other");
+                const customInput = document.getElementById("customTransportInput");
+                
+                if (otherCheckbox && customInput) {
+                    // 기타 체크박스가 체크되지 않았으면 입력 필드 비활성화
+                    customInput.disabled = !otherCheckbox.checked;
+                    if (!otherCheckbox.checked) {
+                        customInput.value = "";
+                    }
+                }
+            }
+
+            function sendTransportation() {
+                const selected = [];
+                
+                // 체크된 옵션 수집
+                const walk = document.getElementById("walk");
+                const subway = document.getElementById("subway");
+                const bus = document.getElementById("bus");
+                const car = document.getElementById("car");
+                const other = document.getElementById("other");
+                const customInput = document.getElementById("customTransportInput");
+                
+                if (walk && walk.checked) selected.push("도보");
+                if (subway && subway.checked) selected.push("지하철");
+                if (bus && bus.checked) selected.push("버스");
+                if (car && car.checked) selected.push("자동차");
+                
+                // 기타 옵션 처리
+                if (other && other.checked && customInput) {
+                    const customValue = customInput.value.trim();
+                    if (customValue) {
+                        selected.push(customValue);
+                    } else {
+                        alert("기타를 선택하셨습니다. 이동수단을 입력해주세요!");
+                        return;
+                    }
+                }
+                
+                if (selected.length === 0) {
+                    alert("이동수단을 하나 이상 선택해주세요!");
+                    return;
+                }
+                
+                // 선택된 이동수단을 쉼표로 구분하여 전송
+                const transportationValue = selected.join(", ");
+                send(transportationValue, "input");
+            }
+
+            // 페이지 로드 시 초기화
+            window.addEventListener('DOMContentLoaded', function() {
+                // 날짜 선택 초기화 (step 4인 경우)
+                const startDate = document.getElementById("startDate");
+                const endDate = document.getElementById("endDate");
+                
+                if (startDate && endDate) {
+                    // 오늘 날짜를 기본값으로 설정
+                    const today = new Date();
+                    const year = today.getFullYear();
+                    const month = String(today.getMonth() + 1).padStart(2, '0');
+                    const day = String(today.getDate()).padStart(2, '0');
+                    const todayStr = `${year}-${month}-${day}`;
+                    
+                    startDate.value = todayStr;
+                    endDate.value = todayStr;
+                    
+                    // 최소 날짜를 오늘로 설정
+                    startDate.min = todayStr;
+                    endDate.min = todayStr;
+                    
+                    // 시작일이 변경되면 종료일의 최소값 업데이트
+                    startDate.addEventListener('change', function() {
+                        if (this.value) {
+                            endDate.min = this.value;
+                            // 종료일이 시작일보다 이전이면 종료일도 시작일로 설정
+                            if (endDate.value && endDate.value < this.value) {
+                                endDate.value = this.value;
+                            }
+                        }
+                    });
+                }
+                
+                // 이동수단 선택 초기화 (step 6인 경우)
+                const customInput = document.getElementById("customTransportInput");
+                if (customInput) {
+                    customInput.disabled = true;
+                }
+            });
+
             document.getElementById("mainForm").addEventListener("keydown", function (e) {
                 if (e.key === "Enter") {
                     e.preventDefault();

@@ -162,13 +162,32 @@ function createEnhancedCard(place, containerId, className = "card") {
     // 이미지 URL 설정 (있는 경우 사용, 없으면 placeholder)
     const imageUrl = place.photo_url || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect fill='%23ddd' width='100' height='100'/%3E%3Ctext fill='%23999' font-family='sans-serif' font-size='14' dy='10.5' font-weight='bold' x='50%25' y='50%25' text-anchor='middle'%3E이미지%3C/text%3E%3C/svg%3E";
     
+    // Google Maps 링크 생성
+    let mapLink = "#";
+    if (place.map_url) {
+        mapLink = place.map_url;
+    } else if (place.coordinates && place.coordinates.lat && place.coordinates.lng) {
+        // 좌표가 있으면 좌표로 링크 생성
+        mapLink = `https://www.google.com/maps?q=${place.coordinates.lat},${place.coordinates.lng}`;
+    } else if (place.address) {
+        // 주소가 있으면 주소로 링크 생성
+        const query = encodeURIComponent(`${place.name} ${place.address}`);
+        mapLink = `https://www.google.com/maps/search/?api=1&query=${query}`;
+    } else if (place.name) {
+        // 이름만 있으면 이름으로 링크 생성
+        const query = encodeURIComponent(place.name);
+        mapLink = `https://www.google.com/maps/search/?api=1&query=${query}`;
+    }
+    
     card.innerHTML = `
         <img src="${imageUrl}" alt="${place.name}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'100\\' height=\\'100\\'%3E%3Crect fill=\\'%23ddd\\' width=\\'100\\' height=\\'100\\'/%3E%3Ctext fill=\\'%23999\\' font-family=\\'sans-serif\\' font-size=\\'14\\' dy=\\'10.5\\' font-weight=\\'bold\\' x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\'%3E이미지%3C/text%3E%3C/svg%3E';">
-        <div class="card-info">
-            <h4>${place.name} ⭐${place.rating}</h4>
-            <p>${place.address}</p>
-            <p>${place.description}</p>
-        </div>
+        <a href="${mapLink}" target="_blank" rel="noopener noreferrer" class="card-info-link">
+            <div class="card-info">
+                <h4>${place.name} ⭐${place.rating}</h4>
+                <p>${place.address}</p>
+                <p>${place.description}</p>
+            </div>
+        </a>
     `;
     container.appendChild(card);
 }

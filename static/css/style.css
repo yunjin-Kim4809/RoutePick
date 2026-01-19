@@ -16,6 +16,24 @@ body, html { margin: 0; height: 100%; font-family: sans-serif; overflow: hidden;
 .card { display: flex; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden; height: 100px; }
 .card img { width: 100px; height: 100%; object-fit: cover; }
 /* 카드 레이아웃 보강 */
+.card-info-link {
+    flex: 1;
+    text-decoration: none;
+    color: inherit;
+    display: flex;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.card-info-link:hover {
+    background-color: #f5f5f5;
+}
+
+.card-info {
+    flex: 1;
+    padding: 10px;
+}
+
 .card-info h4 { margin: 0 0 5px 0; font-size: 1.1rem; }
 .rating { color: #f39c12; font-size: 0.9rem; margin-left: 5px; }
 .addr { font-size: 0.8rem; color: #666; margin-bottom: 5px; }
