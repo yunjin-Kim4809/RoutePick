@@ -1117,4 +1117,3 @@ class GoogleMapsTool(BaseTool):
         total_distance = sum(d.get("distance", 0) for d in valid_directions)
         
         return valid_directions, total_duration, total_distance
-

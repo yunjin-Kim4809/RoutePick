@@ -321,19 +321,64 @@ class CourseCreationTool(BaseTool):
                 except:
                     # 모든 복구 시도 실패
                     raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}\n\nLLM이 JSON 형식으로 응답하지 않았습니다. 작업을 거부했거나 다른 형식으로 응답한 것 같습니다.")
-        # 
-        # # 선택된 장소만 필터링
-        selected_places = [places[i] for i in result["selected_places"]]
-        # 
+
+        # ============================================================
+        # [최종 버그 수정] LLM이 반환한 인덱스 유효성 검증
+        # ============================================================
+        
+        # 1. selected_places 인덱스 검증
+        valid_selected_indices = []
+        if "selected_places" in result:
+            for index in result["selected_places"]:
+                # 인덱스가 정수이고, 유효한 범위 내에 있는지 확인
+                if isinstance(index, int) and 0 <= index < len(places):
+                    valid_selected_indices.append(index)
+                else:
+                    print(f"   ⚠️ LLM이 잘못된 장소 인덱스({index})를 반환하여 무시합니다.")
+        
+        if not valid_selected_indices:
+            raise ValueError("LLM이 유효한 장소를 하나도 선택하지 않았습니다.")
+
+        # 2. sequence 인덱스 검증 (selected_places의 인덱스를 참조하므로 주의)
+        valid_sequence = []
+        if "sequence" in result:
+            for seq_index in result["sequence"]:
+                # sequence의 인덱스가 valid_selected_indices의 유효한 범위 내에 있는지 확인
+                if isinstance(seq_index, int) and 0 <= seq_index < len(valid_selected_indices):
+                    valid_sequence.append(seq_index)
+                else:
+                    print(f"   ⚠️ LLM이 잘못된 순서 인덱스({seq_index})를 반환하여 무시합니다.")
+        
+        # 만약 sequence가 잘못되었으면, 그냥 selected 순서대로라도 복구
+        if not valid_sequence or len(valid_sequence) != len(valid_selected_indices):
+            print(f"   ⚠️ LLM이 반환한 sequence가 유효하지 않아, 선택된 순서로 복구합니다.")
+            valid_sequence = list(range(len(valid_selected_indices)))
+
+        # 3. estimated_duration 키 검증
+        valid_duration = {}
+        if "estimated_duration" in result and isinstance(result["estimated_duration"], dict):
+            for key, value in result["estimated_duration"].items():
+                try:
+                    # 키를 정수로 변환하여 유효한 인덱스인지 확인
+                    index_key = int(key)
+                    if index_key in valid_selected_indices:
+                        valid_duration[str(index_key)] = value
+                except (ValueError, TypeError):
+                    continue # 키가 숫자가 아니면 무시
+
+        # 검증된 인덱스를 사용하여 최종 결과 생성
+        selected_places = [places[i] for i in valid_selected_indices]
+        
         return {
             "course": {
                 "places": selected_places,
-                "sequence": result["sequence"],
-                "estimated_duration": result["estimated_duration"],
-                "course_description": result["course_description"]
+                "sequence": valid_sequence,
+                "estimated_duration": valid_duration,
+                "course_description": result.get("course_description", "")
             },
-            "reasoning": result["reasoning"]
+            "reasoning": result.get("reasoning", "")
         }
+    
     
     def _format_places_for_prompt(self, places: List[Dict[str, Any]]) -> str:
         """
