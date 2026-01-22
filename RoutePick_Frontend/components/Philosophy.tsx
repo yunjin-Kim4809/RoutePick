@@ -16,7 +16,7 @@ const Philosophy: React.FC = () => {
                     The hover effect (grayscale to color) is already set up.
                  */}
                  <img 
-                  src="/images/pexels-jakobjin-6896968.jpg" 
+                  src="https://placehold.co/600x800/E5E7EB/E5E7EB?text=" 
                   alt="Philosophy Image 1" 
                   className="absolute inset-0 w-full h-full object-cover transition-all duration-700 group-hover:scale-105 grayscale group-hover:grayscale-0"
                 />
@@ -28,7 +28,7 @@ const Philosophy: React.FC = () => {
                     USER TODO: Replace the src below with your image URL. 
                  */}
                  <img 
-                  src="/images/pexels-markus-winkler-1430818-5051605.jpg" 
+                  src="https://placehold.co/600x800/E5E7EB/E5E7EB?text=" 
                   alt="Philosophy Image 2" 
                   className="absolute inset-0 w-full h-full object-cover transition-all duration-700 group-hover:scale-105 grayscale group-hover:grayscale-0"
                 />
