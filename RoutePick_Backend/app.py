@@ -145,6 +145,9 @@ async def execute_Agents(task_id, input_data):
             final_course["location"] = input_data["location"]
         if course_result.get("reasoning"):
             final_course["reasoning"] = course_result.get("reasoning")
+        # transportation 정보 저장
+        if input_data.get("transportation"):
+            final_course["transportation"] = input_data["transportation"]
         
         print(f"\n✨ [{task_id}] 코스 제작 완료! 터미널에서 결과 확인:")
         print("=" * 70)
@@ -232,7 +235,7 @@ def chat_page(task_id):
     task = agent_tasks.get(task_id)
     if task and task.get('success'):
         course_data = task.get('course')
-        return render_template('chat.html', course=course_data, google_maps_api_key=Config.GOOGLE_MAPS_API_KEY)
+        return render_template('chat.html', course=course_data, task_id=task_id, google_maps_api_key=Config.GOOGLE_MAPS_API_KEY)
     else:
         error_message = task.get('error', '알 수 없는 오류') if task else '유효하지 않은 접근입니다.'
         # TODO: 더 나은 에러 페이지를 보여줄 수 있음
@@ -264,6 +267,219 @@ def get_locations(task_id):
     if not task or not task.get('success'):
         return jsonify({"error": "유효하지 않은 taskId입니다."}), 404
     return jsonify(task.get('course', {}))
+
+# --- 경로 안내 API ---
+@app.route('/api/route-guide/<task_id>', methods=['POST'])
+def get_route_guide(task_id):
+    """경로 안내 생성 API"""
+    import asyncio
+    import re
+    from agents import RoutingAgent
+    from config.config import Config
+    
+    def clean_html_tags(text):
+        """HTML 태그 제거"""
+        return re.sub(r'<[^>]+>', '', text) if text else ""
+    
+    task = agent_tasks.get(task_id)
+    if not task or not task.get('success'):
+        return jsonify({"error": "유효하지 않은 taskId입니다."}), 404
+    
+    course = task.get('course', {})
+    places = course.get('places', [])
+    sequence = course.get('sequence', [])
+    transportation = course.get('transportation', '도보')
+    
+    if not places or not sequence:
+        return jsonify({"error": "코스 정보가 없습니다."}), 400
+    
+    # 이동 수단을 Google Maps API 모드로 변환
+    mode_mapping = {
+        '도보': 'walking',
+        '자동차': 'driving',
+        '지하철': 'transit',
+        '버스': 'transit',
+        '자전거': 'bicycling'
+    }
+    
+    # transportation 문자열에서 이동 수단 추출
+    transport_mode = 'walking'  # 기본값
+    for key, value in mode_mapping.items():
+        if key in transportation:
+            transport_mode = value
+            break
+    
+    # sequence 순서대로 장소 재배열
+    ordered_places = []
+    for place_idx in sequence:
+        if place_idx < len(places):
+            ordered_places.append(places[place_idx])
+    
+    if len(ordered_places) < 2:
+        return jsonify({"error": "경로 안내를 생성할 장소가 부족합니다."}), 400
+    
+    # 기본 경로 안내 메시지 생성 함수 (API 실패 시에도 사용)
+    def create_basic_guide():
+        """기본 경로 안내 메시지 생성 (Google Maps API 없이)"""
+        guide_text = f"🗺️ <strong>상세 경로 안내 ({transportation})</strong>\n\n"
+        for i in range(len(ordered_places) - 1):
+            from_place = ordered_places[i]
+            to_place = ordered_places[i + 1]
+            from_name = from_place.get('name', '알 수 없음')
+            to_name = to_place.get('name', '알 수 없음')
+            from_addr = from_place.get('address', '')
+            to_addr = to_place.get('address', '')
+            
+            guide_text += f"<strong>{i+1}. {from_name} → {to_name}</strong>\n"
+            
+            if transportation and '버스' in transportation:
+                guide_text += f"   🚌 <strong>버스 안내:</strong>\n"
+                guide_text += f"      • {from_name}에서 가장 가까운 버스 정류장으로 이동하세요.\n"
+                guide_text += f"      • {to_name} 방면 버스를 이용하세요.\n"
+                if from_addr:
+                    guide_text += f"      • 출발지 주소: {from_addr}\n"
+                if to_addr:
+                    guide_text += f"      • 도착지 주소: {to_addr}\n"
+            elif transportation and '지하철' in transportation:
+                guide_text += f"   🚇 <strong>지하철 안내:</strong>\n"
+                guide_text += f"      • {from_name}에서 가장 가까운 지하철역으로 이동하세요.\n"
+                guide_text += f"      • {to_name} 방면 지하철을 이용하세요.\n"
+                if from_addr:
+                    guide_text += f"      • 출발지 주소: {from_addr}\n"
+                if to_addr:
+                    guide_text += f"      • 도착지 주소: {to_addr}\n"
+            elif transportation and '자동차' in transportation:
+                guide_text += f"   🚗 <strong>자동차 안내:</strong>\n"
+                guide_text += f"      • {from_name}에서 {to_name}로 자동차로 이동하세요.\n"
+                if from_addr:
+                    guide_text += f"      • 출발지 주소: {from_addr}\n"
+                if to_addr:
+                    guide_text += f"      • 도착지 주소: {to_addr}\n"
+            else:
+                guide_text += f"   🚶 <strong>도보 안내:</strong>\n"
+                guide_text += f"      • {from_name}에서 {to_name}로 도보로 이동하세요.\n"
+                if from_addr:
+                    guide_text += f"      • 출발지 주소: {from_addr}\n"
+                if to_addr:
+                    guide_text += f"      • 도착지 주소: {to_addr}\n"
+            
+            guide_text += "\n"
+        return guide_text
+    
+    try:
+        # Google Maps API를 사용한 상세 경로 안내 시도
+        try:
+            config = Config.get_agent_config()
+            
+            # Google Maps API 키 확인
+            if not config.get("google_maps_api_key"):
+                print("⚠️ Google Maps API 키가 없습니다. 기본 경로 안내를 제공합니다.")
+                return jsonify({"guide": create_basic_guide()})
+            
+            routing_agent = RoutingAgent(config=config)
+            
+            routing_input = {
+                "places": ordered_places,
+                "mode": transport_mode,
+                "optimize_waypoints": False  # sequence 순서 유지
+            }
+            
+            # 비동기 실행
+            async def run_routing():
+                return await routing_agent.execute(routing_input)
+            
+            # 이벤트 루프 처리
+            try:
+                # 새 이벤트 루프 생성 시도
+                route_result = asyncio.run(run_routing())
+            except RuntimeError as e:
+                if "asyncio.run() cannot be called from a running event loop" in str(e):
+                    # 기존 이벤트 루프 사용
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    route_result = loop.run_until_complete(routing_agent.execute(routing_input))
+                else:
+                    raise
+            
+            # 결과 확인
+            if not route_result.get("success"):
+                error_msg = route_result.get("error", "알 수 없는 오류")
+                print(f"⚠️ 경로 정보 가져오기 실패: {error_msg}")
+                # 기본 안내 제공
+                return jsonify({"guide": create_basic_guide()})
+            
+            directions = route_result.get("directions", [])
+            
+            if not directions:
+                print("⚠️ 경로 안내 정보가 비어있습니다. 기본 안내를 제공합니다.")
+                return jsonify({"guide": create_basic_guide()})
+            
+            # 경로 안내 텍스트 생성
+            guide_text = f"🗺️ <strong>상세 경로 안내 ({transportation})</strong>\n\n"
+            
+            for i, direction in enumerate(directions, 1):
+                from_place = direction.get("from", "출발지")
+                to_place = direction.get("to", "도착지")
+                duration_text = direction.get("duration_text", "")
+                distance_text = direction.get("distance_text", "")
+                mode = direction.get("mode", transport_mode)
+                steps = direction.get("steps", [])
+                
+                guide_text += f"<strong>{i}. {from_place} → {to_place}</strong>\n"
+                guide_text += f"   ⏱ 소요 시간: {duration_text}\n"
+                guide_text += f"   📏 거리: {distance_text}\n"
+                
+                # 이동 수단별 상세 안내
+                if mode == "transit" and steps:
+                    # 대중교통 상세 안내
+                    guide_text += f"   🚌 <strong>대중교통 안내:</strong>\n"
+                    for step in steps[:5]:  # 상위 5개 단계만 표시
+                        instruction = clean_html_tags(step.get("instruction", ""))
+                        if instruction:
+                            guide_text += f"      • {instruction}\n"
+                elif mode == "walking":
+                    guide_text += f"   🚶 <strong>도보 안내:</strong>\n"
+                    if steps:
+                        for step in steps[:3]:  # 상위 3개 단계만 표시
+                            instruction = clean_html_tags(step.get("instruction", ""))
+                            if instruction:
+                                guide_text += f"      • {instruction}\n"
+                    else:
+                        guide_text += f"      • {from_place}에서 {to_place}로 도보로 이동하세요.\n"
+                elif mode == "driving":
+                    guide_text += f"   🚗 <strong>자동차 안내:</strong>\n"
+                    if steps:
+                        for step in steps[:3]:  # 상위 3개 단계만 표시
+                            instruction = clean_html_tags(step.get("instruction", ""))
+                            if instruction:
+                                guide_text += f"      • {instruction}\n"
+                    else:
+                        guide_text += f"      • {from_place}에서 {to_place}로 자동차로 이동하세요.\n"
+                
+                guide_text += "\n"
+            
+            return jsonify({"guide": guide_text})
+            
+        except Exception as api_error:
+            # Google Maps API 호출 실패 시 기본 안내 제공
+            print(f"⚠️ Google Maps API 호출 실패: {api_error}")
+            return jsonify({"guide": create_basic_guide()})
+        
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"❌ 경로 안내 생성 중 오류 발생:")
+        print(error_detail)
+        # 오류 발생 시에도 기본 안내 제공
+        try:
+            basic_guide = create_basic_guide()
+            return jsonify({"guide": basic_guide})
+        except:
+            # 기본 안내 생성도 실패한 경우
+            return jsonify({"error": f"경로 안내 생성 중 오류: {str(e)}"}), 500
 
 # 기존의 단계별 입력 방식은 이제 사용되지 않으므로 주석 처리하거나 삭제 가능
 # @app.route('/', methods=['GET', 'POST']) ...

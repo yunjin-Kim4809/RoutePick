@@ -6,7 +6,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // 초기 코스 정보 로드 및 표시
     async function loadCourseInfo() {
         try {
-            const response = await fetch('/api/locations');
+            const taskId = window.TASK_ID;
+            if (!taskId) {
+                console.error('task_id가 없습니다.');
+                return;
+            }
+            const response = await fetch(`/api/locations/${taskId}`);
             const data = await response.json();
             
             if (data && data.places && data.places.length > 0) {
@@ -63,10 +68,15 @@ document.addEventListener('DOMContentLoaded', () => {
         chatInput.value = '';
 
         try {
+            const taskId = window.TASK_ID;
+            if (!taskId) {
+                appendMessage('bot', '오류: task_id가 없습니다.');
+                return;
+            }
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: message })
+                body: JSON.stringify({ message: message, taskId: taskId })
             });
             const data = await response.json();
             
@@ -88,6 +98,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // 스크롤 하단 이동
         chatWindow.scrollTop = chatWindow.scrollHeight;
     }
+    
+    // 전역으로 appendMessage 함수 노출 (script.js에서 사용)
+    window.appendMessage = appendMessage;
 
     // 버튼 클릭 및 엔터 키 이벤트
     sendBtn.addEventListener('click', sendMessage);
