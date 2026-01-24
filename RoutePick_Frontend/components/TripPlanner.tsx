@@ -72,6 +72,25 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen]);
 
+  // Enter 키로 다음 단계 이동 (review 단계에서만)
+  useEffect(() => {
+    if (!isOpen) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // review 단계에서만 Enter 키로 제출
+      if (currentStep === steps.length - 1 && e.key === 'Enter') {
+        handleNext();
+      }
+    };
+
+    if (currentStep === steps.length - 1) {
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+  }, [isOpen, currentStep]);
+
   const handleNext = async () => {
     if (currentStep < steps.length - 1) {
       setCurrentStep(prev => prev + 1);
@@ -331,6 +350,11 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
                         placeholder="" 
                         value={formData.theme}
                         onChange={(e) => setFormData({...formData, theme: e.target.value})}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && formData.theme.trim()) {
+                                handleNext();
+                            }
+                        }}
                         className="w-full text-2xl md:text-4xl border-b-2 border-gray-200 py-4 focus:border-black focus:outline-none bg-transparent transition-colors"
                     />
                     <div className="mt-6 text-gray-400 text-sm font-medium">
@@ -348,6 +372,11 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
                         placeholder="" 
                         value={formData.location}
                         onChange={(e) => setFormData({...formData, location: e.target.value})}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && formData.location.trim()) {
+                                handleNext();
+                            }
+                        }}
                         className="w-full text-2xl md:text-4xl border-b-2 border-gray-200 py-4 focus:border-black focus:outline-none bg-transparent transition-colors"
                     />
                     <div className="mt-6 text-gray-400 text-sm font-medium">
@@ -387,6 +416,11 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
                                 placeholder="예: 6명"
                                 value={formData.groupSize === '4명+' ? '' : formData.groupSize}
                                 onChange={(e) => setFormData({...formData, groupSize: e.target.value})}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && formData.groupSize.trim()) {
+                                        handleNext();
+                                    }
+                                }}
                                 className="w-full text-xl md:text-2xl border-b-2 border-gray-200 py-3 focus:border-black focus:outline-none bg-transparent transition-colors"
                             />
                         </div>
@@ -434,11 +468,12 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
 
             {/* STEP 5: TIME */}
             {stepData.id === 'visitTime' && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     {[
                         { label: '오전', time: '08:00 - 12:00' },
                         { label: '오후', time: '12:00 - 18:00' },
-                        { label: '저녁', time: '18:00 - 24:00' }
+                        { label: '저녁', time: '18:00 - 24:00' },
+                        { label: '하루종일', time: '00:00 - 24:00' }
                     ].map((item) => (
                         <button
                             key={item.label}
@@ -498,6 +533,11 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
                                 placeholder="예: 자전거, 킥보드"
                                 value={formData.customTransport}
                                 onChange={(e) => setFormData({...formData, customTransport: e.target.value})}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && formData.customTransport.trim()) {
+                                        handleNext();
+                                    }
+                                }}
                                 className="w-full text-xl md:text-2xl border-b-2 border-gray-200 py-3 focus:border-black focus:outline-none bg-transparent transition-colors"
                             />
                         </div>
