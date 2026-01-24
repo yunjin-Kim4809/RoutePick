@@ -94,7 +94,7 @@ body, html { margin: 0; height: 100%; font-family: sans-serif; overflow: hidden;
 }
 .user-message {
     align-self: flex-end;
-    background-color: #007bff;
+    background: linear-gradient(135deg, #C5A683, #a0855f);
     color: white;
 }
 .bot-message {
@@ -139,7 +139,7 @@ body, html { margin: 0; height: 100%; font-family: sans-serif; overflow: hidden;
     right: 20px;
     z-index: 1000;
     padding: 12px 24px;
-    background-color: #007bff;
+    background: linear-gradient(135deg, #C5A683, #a0855f);
     color: white;
     border: none;
     border-radius: 8px;
@@ -151,7 +151,7 @@ body, html { margin: 0; height: 100%; font-family: sans-serif; overflow: hidden;
 }
 
 .route-guide-btn:hover {
-    background-color: #0056b3;
+    background: linear-gradient(135deg, #a0855f, #8a6f4f);
     transform: translateY(-2px);
     box-shadow: 0 6px 8px rgba(0, 0, 0, 0.3);
 }

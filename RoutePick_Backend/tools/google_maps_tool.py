@@ -837,15 +837,21 @@ class GoogleMapsTool(BaseTool):
                             from_place = places[i] if i < len(places) else {"name": "Unknown"}
                             to_place = places[i + 1] if i + 1 < len(places) else {"name": "Unknown"}
                             
-                            # 단계별 경로 정보 추출
+                            # 단계별 경로 정보 추출 (대중교통 상세 정보 포함)
                             steps = []
                             for step in leg.get("steps", []):
-                                steps.append({
+                                step_data = {
                                     "instruction": step.get("html_instructions", ""),
                                     "distance": step.get("distance", {}).get("value", 0),
                                     "duration": step.get("duration", {}).get("value", 0),
                                     "travel_mode": step.get("travel_mode", mode)
-                                })
+                                }
+                                
+                                # 대중교통 상세 정보 추가
+                                if step.get("transit_details"):
+                                    step_data["transit_details"] = step.get("transit_details")
+                                
+                                steps.append(step_data)
                             
                             directions.append({
                                 "from": from_place.get("name", "Unknown"),
@@ -987,12 +993,18 @@ class GoogleMapsTool(BaseTool):
                             
                             steps = []
                             for step in leg.get("steps", []):
-                                steps.append({
+                                step_data = {
                                     "instruction": step.get("html_instructions", ""),
                                     "distance": step.get("distance", {}).get("value", 0),
                                     "duration": step.get("duration", {}).get("value", 0),
                                     "travel_mode": step.get("travel_mode", mode)
-                                })
+                                }
+                                
+                                # 대중교통 상세 정보 추가
+                                if step.get("transit_details"):
+                                    step_data["transit_details"] = step.get("transit_details")
+                                
+                                steps.append(step_data)
                             
                             return {
                                 "from": from_place.get("name", "Unknown"),
