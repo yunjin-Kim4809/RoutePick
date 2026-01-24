@@ -299,13 +299,32 @@ function createEnhancedCard(place, containerId, className = "card") {
         mapLink = `https://www.google.com/maps/search/?api=1&query=${query}`;
     }
     
+    // 카테고리별 아이콘
+    const categoryIcons = {
+        '관광지': '🏛️',
+        '식당': '🍽️',
+        '카페': '☕',
+        '쇼핑': '🛍️',
+        '숙소': '🏨',
+        '활동': '🎯'
+    };
+    const categoryIcon = categoryIcons[place.category] || '📍';
+    
     card.innerHTML = `
-        <img src="${imageUrl}" alt="${place.name}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'100\\' height=\\'100\\'%3E%3Crect fill=\\'%23ddd\\' width=\\'100\\' height=\\'100\\'/%3E%3Ctext fill=\\'%23999\\' font-family=\\'sans-serif\\' font-size=\\'14\\' dy=\\'10.5\\' font-weight=\\'bold\\' x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\'%3E이미지%3C/text%3E%3C/svg%3E';">
+        <div style="position: relative; overflow: hidden;">
+            <img src="${imageUrl}" alt="${place.name}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'100\\' height=\\'100\\'%3E%3Crect fill=\\'%23ddd\\' width=\\'100\\' height=\\'100\\'/%3E%3Ctext fill=\\'%23999\\' font-family=\\'sans-serif\\' font-size=\\'14\\' dy=\\'10.5\\' font-weight=\\'bold\\' x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\'%3E이미지%3C/text%3E%3C/svg%3E';" style="width: 140px; height: 100%; object-fit: cover; display: block;">
+            <div style="position: absolute; top: 8px; left: 8px; background: rgba(255,255,255,0.95); backdrop-filter: blur(8px); padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; color: #1a1a1a; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                ${categoryIcon} ${place.category || '장소'}
+            </div>
+        </div>
         <a href="${mapLink}" target="_blank" rel="noopener noreferrer" class="card-info-link">
             <div class="card-info">
-                <h4>${place.name} ⭐${place.rating}</h4>
-                <p>${place.address}</p>
-                <p>${place.description}</p>
+                <div style="display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px;">
+                    <h4 class="font-semibold text-route-black">${place.name}</h4>
+                    <span class="rating" style="display: inline-flex; align-items: center; gap: 2px;">⭐${place.rating || 'N/A'}</span>
+                </div>
+                <p class="addr text-gray-600">${place.address || '주소 정보 없음'}</p>
+                ${place.description ? `<p class="desc text-gray-500">${place.description}</p>` : ''}
             </div>
         </a>
     `;
