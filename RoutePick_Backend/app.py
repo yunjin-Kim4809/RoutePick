@@ -721,30 +721,152 @@ def get_route_guide(task_id):
             for i, direction in enumerate(directions, 1):
                 from_place = direction.get("from", "출발지")
                 to_place = direction.get("to", "도착지")
+                from_addr = direction.get("from_address", "")
+                to_addr = direction.get("to_address", "")
                 duration_text = direction.get("duration_text", "")
                 distance_text = direction.get("distance_text", "")
                 mode = direction.get("mode", transport_mode)
                 steps = direction.get("steps", [])
                 
                 guide_text += f"<strong>{i}. {from_place} → {to_place}</strong>\n"
+                if from_addr:
+                    guide_text += f"   📍 출발지: {from_addr}\n"
+                if to_addr:
+                    guide_text += f"   📍 도착지: {to_addr}\n"
                 guide_text += f"   ⏱ 소요 시간: {duration_text}\n"
                 guide_text += f"   📏 거리: {distance_text}\n"
                 
                 # 이동 수단별 상세 안내
                 if mode == "transit" and steps:
-                    # 대중교통 상세 안내
-                    guide_text += f"   🚌 <strong>대중교통 안내:</strong>\n"
-                    for step in steps[:5]:  # 상위 5개 단계만 표시
-                        instruction = clean_html_tags(step.get("instruction", ""))
-                        if instruction:
-                            guide_text += f"      • {instruction}\n"
-                elif mode == "walking":
-                    guide_text += f"   🚶 <strong>도보 안내:</strong>\n"
-                    if steps:
-                        for step in steps[:3]:  # 상위 3개 단계만 표시
+                    # 대중교통 상세 안내 (지하철 노선, 버스 번호 등)
+                    guide_text += f"   🚌 <strong>대중교통 상세 안내:</strong>\n"
+                    
+                    transit_steps = []
+                    for step in steps:
+                        transit_detail = step.get("transit_details")
+                        if transit_detail:
+                            # 대중교통 상세 정보 추출
+                            line = transit_detail.get("line", {})
+                            vehicle = transit_detail.get("line", {}).get("vehicle", {})
+                            vehicle_type = vehicle.get("type", "").lower()
+                            
+                            departure_stop = transit_detail.get("departure_stop", {}).get("name", "")
+                            arrival_stop = transit_detail.get("arrival_stop", {}).get("name", "")
+                            num_stops = transit_detail.get("num_stops", 0)
+                            
+                            line_name = line.get("name", "")
+                            line_short_name = line.get("short_name", "")
+                            line_color = line.get("color", "")
+                            
+                            # 지하철인 경우
+                            if vehicle_type == "subway" or "subway" in vehicle_type or "지하철" in line_name or "호선" in line_name or "호선" in line_short_name:
+                                # 노선명 추출 (예: "2호선", "Line 2" 등)
+                                subway_line = line_short_name or line_name
+                                # "Line 2" -> "2호선" 변환 시도
+                                if "line" in subway_line.lower():
+                                    import re
+                                    line_num_match = re.search(r'(\d+)', subway_line)
+                                    if line_num_match:
+                                        subway_line = f"{line_num_match.group(1)}호선"
+                                
+                                transit_info = f"🚇 <strong>지하철 {subway_line}</strong>"
+                                if departure_stop:
+                                    transit_info += f"\n      - 출발역: {departure_stop}"
+                                if arrival_stop:
+                                    transit_info += f"\n      - 도착역: {arrival_stop}"
+                                if num_stops > 0:
+                                    transit_info += f"\n      - {num_stops}개 역 이동"
+                                
+                                # 출발/도착 시간 정보 추가
+                                departure_time = transit_detail.get("departure_time", {}).get("text", "")
+                                arrival_time = transit_detail.get("arrival_time", {}).get("text", "")
+                                if departure_time:
+                                    transit_info += f"\n      - 출발 시간: {departure_time}"
+                                if arrival_time:
+                                    transit_info += f"\n      - 도착 시간: {arrival_time}"
+                                
+                                transit_steps.append(transit_info)
+                            
+                            # 버스인 경우
+                            elif vehicle_type == "bus" or "bus" in vehicle_type or "버스" in line_name:
+                                bus_number = line_short_name or line_name
+                                # 버스 번호 정리 (예: "버스 123" -> "123번")
+                                import re
+                                bus_num_match = re.search(r'(\d+)', bus_number)
+                                if bus_num_match:
+                                    bus_number = f"{bus_num_match.group(1)}번"
+                                
+                                transit_info = f"🚌 <strong>버스 {bus_number}</strong>"
+                                if departure_stop:
+                                    transit_info += f"\n      - 출발 정류장: {departure_stop}"
+                                if arrival_stop:
+                                    transit_info += f"\n      - 도착 정류장: {arrival_stop}"
+                                if num_stops > 0:
+                                    transit_info += f"\n      - {num_stops}개 정류장 이동"
+                                
+                                # 출발/도착 시간 정보 추가
+                                departure_time = transit_detail.get("departure_time", {}).get("text", "")
+                                arrival_time = transit_detail.get("arrival_time", {}).get("text", "")
+                                if departure_time:
+                                    transit_info += f"\n      - 출발 시간: {departure_time}"
+                                if arrival_time:
+                                    transit_info += f"\n      - 도착 시간: {arrival_time}"
+                                
+                                transit_steps.append(transit_info)
+                            
+                            # 기타 대중교통
+                            else:
+                                transit_info = f"🚃 <strong>{line_name or line_short_name or '대중교통'}</strong>"
+                                if departure_stop:
+                                    transit_info += f"\n      - 출발: {departure_stop}"
+                                if arrival_stop:
+                                    transit_info += f"\n      - 도착: {arrival_stop}"
+                                if num_stops > 0:
+                                    transit_info += f"\n      - {num_stops}개 정거장 이동"
+                                transit_steps.append(transit_info)
+                        else:
+                            # 대중교통 상세 정보가 없는 경우 일반 안내
+                            instruction = clean_html_tags(step.get("instruction", ""))
+                            if instruction:
+                                transit_steps.append(f"      • {instruction}")
+                    
+                    # 상세 정보가 있으면 표시, 없으면 일반 안내
+                    if transit_steps:
+                        for transit_info in transit_steps[:8]:  # 최대 8개 표시
+                            guide_text += f"      {transit_info}\n"
+                    else:
+                        # 폴백: 일반 안내
+                        for step in steps[:5]:
                             instruction = clean_html_tags(step.get("instruction", ""))
                             if instruction:
                                 guide_text += f"      • {instruction}\n"
+                elif mode == "walking":
+                    guide_text += f"   🚶 <strong>도보 안내:</strong>\n"
+                    if steps:
+                        # 주요 방향 전환 지점만 표시 (너무 많은 정보는 혼란스러울 수 있음)
+                        important_steps = []
+                        for step in steps:
+                            instruction = clean_html_tags(step.get("instruction", ""))
+                            distance_text = step.get("distance", {}).get("text", "") if isinstance(step.get("distance"), dict) else ""
+                            
+                            # 중요한 단계만 필터링 (방향 전환, 큰 거리 등)
+                            if instruction and ("좌회전" in instruction or "우회전" in instruction or "직진" in instruction or 
+                                               "왼쪽" in instruction or "오른쪽" in instruction or "앞으로" in instruction):
+                                step_info = instruction
+                                if distance_text:
+                                    step_info += f" ({distance_text})"
+                                important_steps.append(step_info)
+                        
+                        if important_steps:
+                            for step_info in important_steps[:5]:  # 최대 5개
+                                guide_text += f"      • {step_info}\n"
+                        else:
+                            # 중요한 단계가 없으면 처음과 마지막만 표시
+                            if len(steps) > 0:
+                                first_instruction = clean_html_tags(steps[0].get("instruction", ""))
+                                if first_instruction:
+                                    guide_text += f"      • {first_instruction}\n"
+                            guide_text += f"      • {from_place}에서 {to_place}로 도보로 이동하세요.\n"
                     else:
                         guide_text += f"      • {from_place}에서 {to_place}로 도보로 이동하세요.\n"
                 elif mode == "driving":
