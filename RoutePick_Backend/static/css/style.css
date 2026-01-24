@@ -160,3 +160,102 @@ body, html { margin: 0; height: 100%; font-family: sans-serif; overflow: hidden;
     transform: translateY(0);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
+
+/* 타이핑 인디케이터 애니메이션 */
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 0;
+}
+
+.typing-indicator span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #C5A683;
+    display: inline-block;
+    animation: typing 1.4s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(1) {
+    animation-delay: -0.32s;
+}
+
+.typing-indicator span:nth-child(2) {
+    animation-delay: -0.16s;
+}
+
+.typing-indicator span:nth-child(3) {
+    animation-delay: 0;
+}
+
+@keyframes typing {
+    0%, 80%, 100% {
+        transform: scale(0.8);
+        opacity: 0.5;
+    }
+    40% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+/* 메시지 애니메이션 개선 */
+.message {
+    animation: fadeInUp 0.3s ease-out;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* 빠른 질문 버튼 스타일 */
+.quick-question-btn {
+    font-family: inherit;
+}
+
+.quick-question-btn:active {
+    transform: translateY(0) !important;
+}
+
+/* 챗봇 입력창 개선 */
+.chat-input-area input {
+    border: 1px solid #ddd;
+    border-radius: 20px;
+    padding: 10px 15px;
+    font-size: 14px;
+    transition: border-color 0.2s;
+}
+
+.chat-input-area input:focus {
+    outline: none;
+    border-color: #C5A683;
+}
+
+.chat-input-area button {
+    padding: 10px 20px;
+    background: linear-gradient(135deg, #C5A683, #a0855f);
+    color: white;
+    border: none;
+    border-radius: 20px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.chat-input-area button:hover {
+    background: linear-gradient(135deg, #a0855f, #8a6f4f);
+    transform: translateY(-1px);
+}
+
+.chat-input-area button:active {
+    transform: translateY(0);
+}

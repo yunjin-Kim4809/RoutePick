@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Myeongdong Cathedral",
+    "address": "74 Myeongdong-gil, Jung District, Seoul, South Korea",
+    "place_id": "ChIJs2hQTOWifDURk8inZqIttEQ",
+    "rating": 4.7,
+    "category": "tourist_attraction",
+    "lat": 37.5633851,
+    "lng": 126.987436
+  },
+  {
+    "name": "Hyodam Kalguksu Dakhanmari Myeongdong",
+    "address": "B1층, 12 Myeongdong 3-gil, Jung District, Seoul, South Korea",
+    "place_id": "ChIJc0C6oz6jfDURbtfsLoz5jXc",
+    "rating": 4.9,
+    "category": "restaurant",
+    "lat": 37.5642308,
+    "lng": 126.9835303
+  }
+]

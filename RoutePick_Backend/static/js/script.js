@@ -1,5 +1,7 @@
 let map;
 let geocoder;
+let markers = [];  // 마커 추적
+let polylines = [];  // 경로 라인 추적
 
 async function initMap() {
     // google 객체가 로드되었는지 확인 (비동기 대응)
@@ -22,6 +24,9 @@ async function initMap() {
         const { Geocoder } = await google.maps.importLibrary("geocoding");
 
         geocoder = new Geocoder();
+        
+        // 전역 변수에 저장 (chatbot.js에서 사용)
+        window.geocoder = geocoder;
 
         map = new Map(document.getElementById("map-container"), {
             zoom: 12,
@@ -34,6 +39,11 @@ async function initMap() {
         google.maps.event.addListenerOnce(map, "idle", () => {
             processLocations(AdvancedMarkerElement, PinElement);
         });
+        
+        // 전역 변수에 저장 (chatbot.js에서 사용)
+        window.map = map;
+        window.markers = markers;
+        window.polylines = polylines;
 
     } catch (error) {
         console.error("Error loading Google Maps libraries:", error);
@@ -45,7 +55,8 @@ window.addEventListener('load', () => {
     initMap();
 });
 
-async function processLocations(AdvancedMarkerElement, PinElement) {
+// 전역으로 노출 (chatbot.js에서 사용)
+window.processLocations = async function(AdvancedMarkerElement, PinElement) {
     // 백엔드 데이터 가져오기
     const taskId = window.TASK_ID;
     if (!taskId) {
@@ -91,12 +102,15 @@ async function processLocations(AdvancedMarkerElement, PinElement) {
                     glyphColor: "white",
                 });
 
-                new AdvancedMarkerElement({
+                const marker = new AdvancedMarkerElement({
                     map: map,
                     position: coords,
                     title: place.name,
                     content: pin.element,
                 });
+                
+                // 마커 추적 배열에 추가
+                markers.push(marker);
 
                 // 카드 생성
                 createEnhancedCard(place, "card-matrix");
@@ -130,10 +144,14 @@ async function processLocations(AdvancedMarkerElement, PinElement) {
         validCoords.forEach(c => bounds.extend(c));
         map.fitBounds(bounds);
     }
-}
+    
+    // 전역 변수 업데이트
+    window.markers = markers;
+    window.polylines = polylines;
+};
 
-// 실제 도로 경로 그리기 함수
-async function drawActualRoute(coords, places, courseData) {
+// 실제 도로 경로 그리기 함수 (전역으로 노출)
+window.drawActualRoute = async function(coords, places, courseData) {
     try {
         // Directions Service 사용 (기존 API 방식)
         const directionsService = new google.maps.DirectionsService();
@@ -195,26 +213,28 @@ async function drawActualRoute(coords, places, courseData) {
                                 
                                 // Polyline으로 경로 그리기
                                 if (path.length > 0) {
-                                    new google.maps.Polyline({
+                                    const polyline = new google.maps.Polyline({
                                         path: path,
                                         strokeColor: "#4285F4",
                                         strokeOpacity: 0.8,
                                         strokeWeight: 6,
                                         map: map
                                     });
+                                    polylines.push(polyline);
                                 }
                                 
                                 resolve(true);
                             } else {
                                 // 실패 시 직선으로 폴백
                                 console.warn(`경로 ${i+1} 그리기 실패 (${status}), 직선으로 표시합니다.`);
-                                new google.maps.Polyline({
+                                const fallbackPolyline = new google.maps.Polyline({
                                     path: [origin, destination],
                                     strokeColor: "#FF6B6B",
                                     strokeOpacity: 0.5,
                                     strokeWeight: 3,
                                     map: map
                                 });
+                                polylines.push(fallbackPolyline);
                                 resolve(false);
                             }
                         }
@@ -229,19 +249,20 @@ async function drawActualRoute(coords, places, courseData) {
         console.error("실제 경로 그리기 실패, 직선으로 표시합니다:", error);
         // 폴백: 직선 경로
         if (coords.length > 1) {
-            new google.maps.Polyline({
+            const fallbackPolyline = new google.maps.Polyline({
                 path: coords,
                 strokeColor: "#0000FF",
                 strokeOpacity: 0.8,
                 strokeWeight: 6,
                 map: map
             });
+            polylines.push(fallbackPolyline);
         }
     }
-}
+};
 
-// 주소 -> 좌표 변환 함수
-function geocodeAddress(address) {
+// 주소 -> 좌표 변환 함수 (전역으로 노출)
+window.geocodeAddress = function(address) {
     return new Promise((resolve, reject) => {
         geocoder.geocode({ address: address }, (results, status) => {
             if (status === "OK") {
@@ -270,10 +291,10 @@ function geocodeAddress(address) {
             }
         });
     });
-}
+};
 
-// 카드 생성 함수
-function createEnhancedCard(place, containerId, className = "card") {
+// 카드 생성 함수 (전역으로 노출)
+window.createEnhancedCard = function(place, containerId, className = "card") {
     const container = document.getElementById(containerId);
     if (!container) return;
     
@@ -329,7 +350,7 @@ function createEnhancedCard(place, containerId, className = "card") {
         </a>
     `;
     container.appendChild(card);
-}
+};
 
 // (a) 챗봇 로직
 async function sendMessage() {
