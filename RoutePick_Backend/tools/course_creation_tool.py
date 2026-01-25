@@ -90,6 +90,27 @@ class CourseCreationTool(BaseTool):
         
         Args:
             places: 검색된 장소 리스트
+            user_preferences: 사용자 선호도
+            time_constraints: 시간 제약
+            
+        Returns:
+            코스 생성 결과
+        """
+        # 장소 개수 사전 제한 (컨텍스트 길이 초과 방지)
+        MAX_PLACES = 50
+        if len(places) > MAX_PLACES:
+            print(f"⚠️ 장소가 {len(places)}개로 너무 많아 {MAX_PLACES}개로 제한합니다.")
+            # 저장된 장소는 우선 보존
+            saved_places = [p for p in places if p.get('is_saved_place')]
+            other_places = [p for p in places if not p.get('is_saved_place')]
+            # 저장된 장소 + 나머지 장소 (신뢰도 순으로 정렬)
+            other_places.sort(key=lambda x: x.get('trust_score', 0), reverse=True)
+            places = saved_places + other_places[:MAX_PLACES - len(saved_places)]
+        """
+        코스 제작 실행
+        
+        Args:
+            places: 검색된 장소 리스트
             user_preferences: 사용자 선호도 {
                 "theme": str,  # 테마 (예: "비 오는 날 실내 데이트")
                 "group_size": int,  # 인원
@@ -658,7 +679,7 @@ class CourseCreationTool(BaseTool):
     
     def _format_places_for_prompt(self, places: List[Dict[str, Any]]) -> str:
         """
-        프롬프트용 장소 정보 포맷팅
+        프롬프트용 장소 정보 포맷팅 (토큰 최적화)
         
         Args:
             places: 장소 리스트 (name, category, coordinates, rating, trust_score, address, source_url, map_url 포함)
@@ -666,6 +687,12 @@ class CourseCreationTool(BaseTool):
         Returns:
             포맷팅된 문자열
         """
+        # 장소 개수 제한 (너무 많으면 토큰 초과)
+        MAX_PLACES = 50
+        if len(places) > MAX_PLACES:
+            print(f"⚠️ 장소가 {len(places)}개로 너무 많아 {MAX_PLACES}개로 제한합니다.")
+            places = places[:MAX_PLACES]
+        
         formatted = []
         for i, place in enumerate(places, 1):
             # 필수 정보: 이름 및 카테고리
@@ -677,34 +704,32 @@ class CourseCreationTool(BaseTool):
             if place.get('is_saved_place'):
                 info += " ⭐ [사용자가 저장한 장소 - 최우선 고려]"
             
-            # [추가] 좌표 정보를 LLM이 읽을 수 있게 텍스트로 포함
+            # 좌표 정보 (정밀도 낮춤: 소수점 4자리까지만)
             coords = place.get('coordinates')
             if coords:
-                info += f" (위치: {coords.get('lat')}, {coords.get('lng')})"
+                lat = round(float(coords.get('lat', 0)), 4)
+                lng = round(float(coords.get('lng', 0)), 4)
+                info += f" (위치: {lat}, {lng})"
 
-            # 점수 정보 (평점 및 신뢰도)
+            # 점수 정보 (평점 및 신뢰도) - 간략하게
             scores = []
             if place.get('rating'):
-                scores.append(f"평점: {place['rating']}")
+                scores.append(f"평점:{place['rating']}")
             if place.get('trust_score'):
-                scores.append(f"신뢰도: {place['trust_score']}")
+                scores.append(f"신뢰도:{place['trust_score']}")
             
             if scores:
-                info += f" - {' / '.join(scores)}"
+                info += f" [{', '.join(scores)}]"
                 
-            # 주소 정보
+            # 주소 정보 (간략하게 - 최대 50자)
             if place.get('address'):
-                info += f"\n   주소: {place['address']}"
-                
-            # 링크 정보 (출처 및 지도)
-            links = []
-            if place.get('source_url'):
-                links.append(f"추천 근거: {place['source_url']}")
-            if place.get('map_url'):
-                links.append(f"지도: {place['map_url']}")
-                
-            if links:
-                info += f"\n   링크: {' | '.join(links)}"
+                address = place['address']
+                if len(address) > 50:
+                    address = address[:47] + "..."
+                info += f"\n   주소: {address}"
+            
+            # 링크 정보는 제거 (URL이 너무 길어서 토큰 낭비)
+            # 필요시 check_routing tool을 통해 확인 가능
                 
             formatted.append(info)
             

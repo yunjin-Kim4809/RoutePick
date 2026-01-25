@@ -705,7 +705,7 @@ def get_route_guide(task_id):
             # Google Maps API 키 확인
             if not config.get("google_maps_api_key"):
                 print("⚠️ Google Maps API 키가 없습니다. 기본 경로 안내를 제공합니다.")
-                return jsonify({"guide": create_basic_guide()})
+                return jsonify({"guide": create_basic_guide(), "route_paths": []})
             
             routing_agent = RoutingAgent(config=config)
             
@@ -751,16 +751,26 @@ def get_route_guide(task_id):
                 error_msg = route_result.get("error", "알 수 없는 오류")
                 print(f"⚠️ 경로 정보 가져오기 실패: {error_msg}")
                 # 기본 안내 제공
-                return jsonify({"guide": create_basic_guide()})
+                return jsonify({"guide": create_basic_guide(), "route_paths": []})
             
             directions = route_result.get("directions", [])
             
             if not directions:
                 print("⚠️ 경로 안내 정보가 비어있습니다. 기본 안내를 제공합니다.")
-                return jsonify({"guide": create_basic_guide()})
+                return jsonify({"guide": create_basic_guide(), "route_paths": []})
             
-            # 경로 안내 텍스트 생성
+            # directions에 에러가 있는지 확인
+            has_errors = any(d.get("error") for d in directions)
+            has_empty_steps = all(not d.get("steps") or len(d.get("steps", [])) == 0 for d in directions)
+            
+            if has_errors or has_empty_steps:
+                print(f"⚠️ 경로 안내에 문제가 있습니다. has_errors={has_errors}, has_empty_steps={has_empty_steps}")
+                # 에러가 있거나 steps가 비어있으면 기본 안내 제공
+                return jsonify({"guide": create_basic_guide(), "route_paths": []})
+            
+            # 경로 안내 텍스트 생성 및 경로 좌표 정보 수집
             guide_text = f"🗺️ <strong>상세 경로 안내 ({transportation})</strong>\n\n"
+            route_paths = []  # 각 구간별 경로 좌표 정보
             
             for i, direction in enumerate(directions, 1):
                 from_place = direction.get("from", "출발지")
@@ -771,6 +781,18 @@ def get_route_guide(task_id):
                 distance_text = direction.get("distance_text", "")
                 mode = direction.get("mode", transport_mode)
                 steps = direction.get("steps", [])
+                
+                # 디버깅: direction 데이터 확인
+                print(f"\n=== 구간 {i} 데이터 확인 ===")
+                print(f"from: {from_place}, to: {to_place}")
+                print(f"mode: {mode}, steps 개수: {len(steps)}")
+                if steps and len(steps) > 0:
+                    first_step = steps[0]
+                    print(f"첫 번째 step 키들: {list(first_step.keys())}")
+                    if "formatted_instruction" in first_step:
+                        print(f"첫 번째 step formatted_instruction: {first_step['formatted_instruction'][:100]}...")
+                    else:
+                        print(f"⚠️ 첫 번째 step에 formatted_instruction이 없습니다!")
                 
                 guide_text += f"<strong>{i}. {from_place} → {to_place}</strong>\n"
                 if from_addr:
@@ -790,50 +812,169 @@ def get_route_guide(task_id):
                 actual_mode = mode_display.get(mode, f"이동 수단: {mode}")
                 guide_text += f"   {actual_mode}\n"
                 
+                # 각 구간별 경로 좌표 정보 수집
+                segment_paths = []
+                for step in steps:
+                    step_path = step.get("path", [])
+                    if step_path and len(step_path) > 0:  # path가 있고 비어있지 않은 경우만
+                        step_travel_mode = step.get("travel_mode", mode).upper()
+                        step_transit_details = step.get("transit_details")
+                        segment_paths.append({
+                            "path": step_path,
+                            "travel_mode": step_travel_mode,
+                            "transit_details": step_transit_details
+                        })
+                route_paths.append(segment_paths)
+                
+                # 디버깅: 경로 좌표 정보 로그
+                total_coords_in_segment = sum(len(sp.get("path", [])) for sp in segment_paths)
+                print(f"구간 {i} 경로 좌표 수집: {len(segment_paths)}개 step, 총 {total_coords_in_segment}개 좌표")
+                
                 # 이동 수단별 상세 안내
-                if mode == "transit" and steps:
-                    # 대중교통 상세 안내 (지하철 노선, 버스 번호 등)
-                    guide_text += f"   🚌 <strong>대중교통 상세 안내:</strong>\n"
+                # 모든 이동 수단에 대해 formatted_instruction 우선 확인
+                has_formatted_instructions = any(step.get("formatted_instruction") for step in steps) if steps else False
+                
+                # 디버깅: formatted_instruction 확인
+                print(f"구간 {i} 디버깅:")
+                print(f"  - steps 개수: {len(steps) if steps else 0}")
+                print(f"  - has_formatted_instructions: {has_formatted_instructions}")
+                if steps:
+                    for step_idx, step in enumerate(steps):
+                        formatted_inst = step.get("formatted_instruction")
+                        travel_mode = step.get("travel_mode", "")
+                        print(f"  - step {step_idx}: travel_mode={travel_mode}, formatted_instruction={'있음' if formatted_inst else '없음'}")
+                        if formatted_inst:
+                            print(f"    → 내용: {formatted_inst[:100]}...")
+                
+                if has_formatted_instructions:
+                    # formatted_instruction이 있으면 모든 step의 formatted_instruction 사용
+                    guide_text += f"   📍 <strong>상세 이동 안내:</strong>\n"
+                    for step_idx, step in enumerate(steps):
+                        formatted_instruction = step.get("formatted_instruction")
+                        if formatted_instruction:
+                            print(f"  ✅ 구간 {i}, step {step_idx} formatted_instruction 사용: {formatted_instruction[:50]}...")
+                            # 줄바꿈 처리
+                            transit_info_lines = formatted_instruction.split('\n')
+                            for line in transit_info_lines:
+                                if line.strip():  # 빈 줄 제외
+                                    guide_text += f"      {line.strip()}\n"
+                    # formatted_instruction을 사용했으므로 다음 조건문 건너뛰기
+                    guide_text += "\n"
+                # 대중교통 전용 상세 안내 (formatted_instruction이 없을 때만)
+                elif mode == "transit" and steps:
+                    # mode가 transit이거나 steps에 transit 정보가 있으면 상세 안내
+                    has_transit = (mode == "transit" or 
+                                   any(step.get("travel_mode", "").upper() == "TRANSIT" for step in steps) or
+                                   any(step.get("transit_details") for step in steps))
                     
-                    transit_steps = []
-                    for step in steps:
-                        transit_detail = step.get("transit_details")
-                        if transit_detail:
-                            # 대중교통 상세 정보 추출
-                            line = transit_detail.get("line", {})
-                            vehicle = transit_detail.get("line", {}).get("vehicle", {})
-                            vehicle_type = vehicle.get("type", "").lower()
+                    if has_transit:
+                        # 대중교통 상세 안내 (지하철 노선, 버스 번호 등)
+                        guide_text += f"   🚌 <strong>대중교통 상세 안내:</strong>\n"
+                        
+                        transit_steps = []
+                        
+                        for step_idx, step in enumerate(steps):
+                            # 포맷팅된 instruction이 있으면 우선 사용
+                            formatted_instruction = step.get("formatted_instruction")
+                            transit_summary = step.get("transit_summary")
+                            transit_detail = step.get("transit_details")
+                            travel_mode = step.get("travel_mode", "").upper()
                             
-                            departure_stop = transit_detail.get("departure_stop", {}).get("name", "")
-                            arrival_stop = transit_detail.get("arrival_stop", {}).get("name", "")
+                            # 디버깅: step 정보 확인
+                            print(f"  구간 {i}, step {step_idx}: travel_mode={travel_mode}, formatted_instruction={'있음' if formatted_instruction else '없음'}, transit_details={'있음' if transit_detail else '없음'}")
+                            
+                            # 포맷팅된 instruction이 있으면 사용
+                            if formatted_instruction:
+                                transit_steps.append(formatted_instruction)
+                                print(f"    → formatted_instruction 사용: {formatted_instruction[:50]}...")
+                                continue
+                        
+                        # transit_summary가 있으면 사용
+                        if transit_summary:
+                            transit_type = transit_summary.get("type", "")
+                            line_number = transit_summary.get("line_number", "")
+                            departure_stop = transit_summary.get("departure_stop", "")
+                            arrival_stop = transit_summary.get("arrival_stop", "")
+                            num_stops = transit_summary.get("num_stops", 0)
+                            
+                            if transit_type == "bus" and line_number:
+                                transit_info = f"🚌 {line_number}번 버스 이용"
+                                if departure_stop:
+                                    transit_info += f"\n      - 승차 정류장: {departure_stop}"
+                                if arrival_stop:
+                                    transit_info += f"\n      - 하차 정류장: {arrival_stop}"
+                                if num_stops > 0:
+                                    transit_info += f"\n      - {num_stops}개 정류장 이동"
+                                transit_steps.append(transit_info)
+                            elif transit_type == "subway" and line_number:
+                                transit_info = f"🚇 지하철 {line_number} 이용"
+                                if departure_stop:
+                                    transit_info += f"\n      - 승차역: {departure_stop}"
+                                if arrival_stop:
+                                    transit_info += f"\n      - 하차역: {arrival_stop}"
+                                if num_stops > 0:
+                                    transit_info += f"\n      - {num_stops}개 역 이동"
+                                transit_steps.append(transit_info)
+                        
+                        # 기존 로직 (폴백)
+                        elif transit_detail:
+                            import re
+                            # 대중교통 상세 정보 추출
+                            line = transit_detail.get("line", {}) or {}
+                            vehicle = line.get("vehicle", {}) or {}
+                            vehicle_type = vehicle.get("type", "").lower() if vehicle.get("type") else ""
+                            
+                            departure_stop = transit_detail.get("departure_stop", {}) or {}
+                            arrival_stop = transit_detail.get("arrival_stop", {}) or {}
+                            departure_stop_name = departure_stop.get("name", "") if isinstance(departure_stop, dict) else ""
+                            arrival_stop_name = arrival_stop.get("name", "") if isinstance(arrival_stop, dict) else ""
                             num_stops = transit_detail.get("num_stops", 0)
                             
-                            line_name = line.get("name", "")
-                            line_short_name = line.get("short_name", "")
-                            line_color = line.get("color", "")
+                            line_name = line.get("name", "") or ""
+                            line_short_name = line.get("short_name", "") or ""
                             
-                            # 지하철인 경우
-                            if vehicle_type == "subway" or "subway" in vehicle_type or "지하철" in line_name or "호선" in line_name or "호선" in line_short_name:
+                            # 출발/도착 시간 정보
+                            departure_time_obj = transit_detail.get("departure_time", {}) or {}
+                            arrival_time_obj = transit_detail.get("arrival_time", {}) or {}
+                            departure_time = departure_time_obj.get("text", "") if isinstance(departure_time_obj, dict) else ""
+                            arrival_time = arrival_time_obj.get("text", "") if isinstance(arrival_time_obj, dict) else ""
+                            
+                            # 지하철인 경우 판단 (더 관대한 조건)
+                            is_subway = (
+                                vehicle_type == "subway" or 
+                                "subway" in vehicle_type or 
+                                "지하철" in line_name or 
+                                "호선" in line_name or 
+                                "호선" in line_short_name or
+                                "line" in line_name.lower() or
+                                "line" in line_short_name.lower()
+                            )
+                            
+                            # 버스인 경우 판단 (더 관대한 조건)
+                            is_bus = (
+                                vehicle_type == "bus" or 
+                                "bus" in vehicle_type or 
+                                "버스" in line_name or
+                                "버스" in line_short_name or
+                                (not is_subway and line_short_name and re.search(r'\d+', line_short_name))  # 숫자가 포함된 경우 버스로 간주
+                            )
+                            
+                            if is_subway:
                                 # 노선명 추출 (예: "2호선", "Line 2" 등)
                                 subway_line = line_short_name or line_name
                                 # "Line 2" -> "2호선" 변환 시도
                                 if "line" in subway_line.lower():
-                                    import re
                                     line_num_match = re.search(r'(\d+)', subway_line)
                                     if line_num_match:
                                         subway_line = f"{line_num_match.group(1)}호선"
                                 
                                 transit_info = f"🚇 <strong>지하철 {subway_line}</strong>"
-                                if departure_stop:
-                                    transit_info += f"\n      - 출발역: {departure_stop}"
-                                if arrival_stop:
-                                    transit_info += f"\n      - 도착역: {arrival_stop}"
+                                if departure_stop_name:
+                                    transit_info += f"\n      - 출발역: {departure_stop_name}"
+                                if arrival_stop_name:
+                                    transit_info += f"\n      - 도착역: {arrival_stop_name}"
                                 if num_stops > 0:
                                     transit_info += f"\n      - {num_stops}개 역 이동"
-                                
-                                # 출발/도착 시간 정보 추가
-                                departure_time = transit_detail.get("departure_time", {}).get("text", "")
-                                arrival_time = transit_detail.get("arrival_time", {}).get("text", "")
                                 if departure_time:
                                     transit_info += f"\n      - 출발 시간: {departure_time}"
                                 if arrival_time:
@@ -841,26 +982,26 @@ def get_route_guide(task_id):
                                 
                                 transit_steps.append(transit_info)
                             
-                            # 버스인 경우
-                            elif vehicle_type == "bus" or "bus" in vehicle_type or "버스" in line_name:
+                            elif is_bus:
+                                # 버스 번호 추출
                                 bus_number = line_short_name or line_name
-                                # 버스 번호 정리 (예: "버스 123" -> "123번")
-                                import re
-                                bus_num_match = re.search(r'(\d+)', bus_number)
-                                if bus_num_match:
-                                    bus_number = f"{bus_num_match.group(1)}번"
+                                if not bus_number:
+                                    bus_number = "버스"
+                                else:
+                                    # 버스 번호 정리 (예: "버스 123" -> "123번", "Bus 123" -> "123번")
+                                    bus_num_match = re.search(r'(\d+)', bus_number)
+                                    if bus_num_match:
+                                        bus_number = f"{bus_num_match.group(1)}번"
+                                    elif "버스" not in bus_number:
+                                        bus_number = f"{bus_number}번"
                                 
-                                transit_info = f"🚌 <strong>버스 {bus_number}</strong>"
-                                if departure_stop:
-                                    transit_info += f"\n      - 출발 정류장: {departure_stop}"
-                                if arrival_stop:
-                                    transit_info += f"\n      - 도착 정류장: {arrival_stop}"
+                                transit_info = f"🚌 <strong>{bus_number} 버스</strong>"
+                                if departure_stop_name:
+                                    transit_info += f"\n      - 승차 정류장: {departure_stop_name}"
+                                if arrival_stop_name:
+                                    transit_info += f"\n      - 하차 정류장: {arrival_stop_name}"
                                 if num_stops > 0:
                                     transit_info += f"\n      - {num_stops}개 정류장 이동"
-                                
-                                # 출발/도착 시간 정보 추가
-                                departure_time = transit_detail.get("departure_time", {}).get("text", "")
-                                arrival_time = transit_detail.get("arrival_time", {}).get("text", "")
                                 if departure_time:
                                     transit_info += f"\n      - 출발 시간: {departure_time}"
                                 if arrival_time:
@@ -868,58 +1009,103 @@ def get_route_guide(task_id):
                                 
                                 transit_steps.append(transit_info)
                             
-                            # 기타 대중교통
-                            else:
-                                transit_info = f"🚃 <strong>{line_name or line_short_name or '대중교통'}</strong>"
-                                if departure_stop:
-                                    transit_info += f"\n      - 출발: {departure_stop}"
-                                if arrival_stop:
-                                    transit_info += f"\n      - 도착: {arrival_stop}"
+                            # 기타 대중교통 (transit_detail이 있지만 버스/지하철이 아닌 경우)
+                            elif line_name or line_short_name:
+                                transit_info = f"🚃 <strong>{line_name or line_short_name}</strong>"
+                                if departure_stop_name:
+                                    transit_info += f"\n      - 출발: {departure_stop_name}"
+                                if arrival_stop_name:
+                                    transit_info += f"\n      - 도착: {arrival_stop_name}"
                                 if num_stops > 0:
                                     transit_info += f"\n      - {num_stops}개 정거장 이동"
+                                if departure_time:
+                                    transit_info += f"\n      - 출발 시간: {departure_time}"
+                                if arrival_time:
+                                    transit_info += f"\n      - 도착 시간: {arrival_time}"
                                 transit_steps.append(transit_info)
-                        else:
-                            # 대중교통 상세 정보가 없는 경우 일반 안내
+                            
+                            # transit_detail이 있지만 정보가 부족한 경우
+                            elif departure_stop_name or arrival_stop_name:
+                                transit_info = "🚌 <strong>대중교통 이용</strong>"
+                                if departure_stop_name:
+                                    transit_info += f"\n      - 출발: {departure_stop_name}"
+                                if arrival_stop_name:
+                                    transit_info += f"\n      - 도착: {arrival_stop_name}"
+                                transit_steps.append(transit_info)
+                        
+                        # 대중교통 step이지만 transit_details가 없는 경우 (도보 이동 등)
+                        elif travel_mode == "transit" or (step.get("instruction") and ("버스" in step.get("instruction", "") or "지하철" in step.get("instruction", ""))):
                             instruction = clean_html_tags(step.get("instruction", ""))
                             if instruction:
                                 transit_steps.append(f"      • {instruction}")
                     
                     # 상세 정보가 있으면 표시, 없으면 일반 안내
                     if transit_steps:
-                        for transit_info in transit_steps[:8]:  # 최대 8개 표시
-                            guide_text += f"      {transit_info}\n"
-                    else:
-                        # 폴백: 일반 안내
-                        for step in steps[:5]:
-                            instruction = clean_html_tags(step.get("instruction", ""))
-                            if instruction:
-                                guide_text += f"      • {instruction}\n"
+                        for transit_info in transit_steps[:10]:  # 최대 10개 표시 (더 많은 정보 제공)
+                            # formatted_instruction이 여러 줄일 수 있으므로 줄바꿈 처리
+                            if isinstance(transit_info, str):
+                                # 줄바꿈을 <br>로 변환하여 HTML에서 제대로 표시되도록
+                                transit_info_lines = transit_info.split('\n')
+                                for line in transit_info_lines:
+                                    if line.strip():  # 빈 줄 제외
+                                        guide_text += f"      {line.strip()}\n"
+                            else:
+                                guide_text += f"      {str(transit_info)}\n"
+                        else:
+                            # 폴백: transit_details가 없는 경우 디버깅 및 일반 안내
+                            # 디버깅: transit_details가 있는 step이 있는지 확인
+                            has_transit_details = any(step.get("transit_details") for step in steps)
+                            has_formatted = any(step.get("formatted_instruction") for step in steps)
+                            
+                            print(f"  ⚠️ 구간 {i} transit_steps가 비어있음. has_transit_details={has_transit_details}, has_formatted={has_formatted}")
+                            
+                            if has_formatted:
+                                # formatted_instruction이 있으면 강제로 사용
+                                guide_text += f"   📍 <strong>상세 이동 안내:</strong>\n"
+                                for step in steps:
+                                    formatted_instruction = step.get("formatted_instruction")
+                                    if formatted_instruction:
+                                        transit_info_lines = formatted_instruction.split('\n')
+                                        for line in transit_info_lines:
+                                            if line.strip():
+                                                guide_text += f"      {line.strip()}\n"
+                            elif has_transit_details:
+                                # transit_details는 있지만 파싱에 실패한 경우
+                                guide_text += f"      ⚠️ 대중교통 상세 정보를 가져오는 중 문제가 발생했습니다.\n"
+                                # 일반 안내 제공
+                                for step in steps[:5]:
+                                    instruction = clean_html_tags(step.get("instruction", ""))
+                                    if instruction:
+                                        guide_text += f"      • {instruction}\n"
+                            else:
+                                # 일반 안내 제공
+                                for step in steps[:5]:
+                                    instruction = clean_html_tags(step.get("instruction", ""))
+                                    if instruction:
+                                        guide_text += f"      • {instruction}\n"
                 elif mode == "walking":
                     guide_text += f"   🚶 <strong>도보 안내:</strong>\n"
                     if steps:
-                        # 주요 방향 전환 지점만 표시 (너무 많은 정보는 혼란스러울 수 있음)
-                        important_steps = []
+                        # 포맷팅된 instruction이 있으면 우선 사용
+                        formatted_steps = []
                         for step in steps:
-                            instruction = clean_html_tags(step.get("instruction", ""))
-                            distance_text = step.get("distance", {}).get("text", "") if isinstance(step.get("distance"), dict) else ""
-                            
-                            # 중요한 단계만 필터링 (방향 전환, 큰 거리 등)
-                            if instruction and ("좌회전" in instruction or "우회전" in instruction or "직진" in instruction or 
-                                               "왼쪽" in instruction or "오른쪽" in instruction or "앞으로" in instruction):
-                                step_info = instruction
-                                if distance_text:
-                                    step_info += f" ({distance_text})"
-                                important_steps.append(step_info)
+                            formatted_instruction = step.get("formatted_instruction")
+                            if formatted_instruction:
+                                formatted_steps.append(formatted_instruction)
+                            else:
+                                # 폴백: 기존 로직
+                                instruction = clean_html_tags(step.get("instruction", ""))
+                                distance_text = step.get("distance_text", "") or (step.get("distance", {}).get("text", "") if isinstance(step.get("distance"), dict) else "")
+                                if instruction:
+                                    step_info = f"🚶 {instruction}"
+                                    if distance_text:
+                                        step_info += f" ({distance_text})"
+                                    formatted_steps.append(step_info)
                         
-                        if important_steps:
-                            for step_info in important_steps[:5]:  # 최대 5개
-                                guide_text += f"      • {step_info}\n"
+                        if formatted_steps:
+                            for step_info in formatted_steps[:5]:  # 최대 5개
+                                guide_text += f"      {step_info}\n"
                         else:
-                            # 중요한 단계가 없으면 처음과 마지막만 표시
-                            if len(steps) > 0:
-                                first_instruction = clean_html_tags(steps[0].get("instruction", ""))
-                                if first_instruction:
-                                    guide_text += f"      • {first_instruction}\n"
                             guide_text += f"      • {from_place}에서 {to_place}로 도보로 이동하세요.\n"
                     else:
                         guide_text += f"      • {from_place}에서 {to_place}로 도보로 이동하세요.\n"
@@ -935,12 +1121,23 @@ def get_route_guide(task_id):
                 
                 guide_text += "\n"
             
-            return jsonify({"guide": guide_text})
+            # 경로 좌표 정보와 함께 반환
+            total_paths = sum(len(segment) for segment in route_paths)
+            total_coords = sum(
+                sum(len(step.get("path", [])) for step in segment)
+                for segment in route_paths
+            )
+            print(f"✅ 경로 안내 생성 완료: {len(route_paths)}개 구간, {total_paths}개 step, 총 {total_coords}개 좌표")
+            
+            return jsonify({
+                "guide": guide_text,
+                "route_paths": route_paths  # 각 구간별 step 경로 좌표 정보
+            })
             
         except Exception as api_error:
             # Google Maps API 호출 실패 시 기본 안내 제공
             print(f"⚠️ Google Maps API 호출 실패: {api_error}")
-            return jsonify({"guide": create_basic_guide()})
+            return jsonify({"guide": create_basic_guide(), "route_paths": []})
         
     except Exception as e:
         import traceback
@@ -950,7 +1147,7 @@ def get_route_guide(task_id):
         # 오류 발생 시에도 기본 안내 제공
         try:
             basic_guide = create_basic_guide()
-            return jsonify({"guide": basic_guide})
+            return jsonify({"guide": basic_guide, "route_paths": []})
         except:
             # 기본 안내 생성도 실패한 경우
             return jsonify({"error": f"경로 안내 생성 중 오류: {str(e)}"}), 500
