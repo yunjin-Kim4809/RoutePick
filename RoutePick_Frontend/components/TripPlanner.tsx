@@ -1,5 +1,33 @@
-import React, { useState, useEffect } from 'react';
-import { X, ArrowRight, ArrowLeft, Calendar as CalendarIcon, MapPin, Users, Footprints, Sparkles, Train, Bus, Car, Plus, ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
+// 1. useRef 추가, Map 아이콘 추가
+import React, { useState, useEffect, useRef } from 'react'; 
+import { X, ArrowRight, ArrowLeft, Calendar as CalendarIcon, MapPin, Users, Footprints, Sparkles, Train, Bus, Car, Plus, ChevronLeft, ChevronRight, MoreHorizontal, Map } from 'lucide-react';
+
+// --- Loading Animation Assets ---
+const ICONS = [
+  // 1. Location Pin
+  `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+Cgk8cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Im03MC4zODcgNzBsLTMuODU0IDcuMjQ3bDE4Ljg3LTMuMDg1Yy0zLjgwOC0xLjkxLTguOTYzLTMuMjc1LTE1LjAxNi00LjE2Mm0tNDguNjEgMS41OEMxMy4wMzcgNzMuODg1IDcuNSA3Ny42NjIgNy41IDgzLjI3MmE4LjQgOC40IDAgMCAwIC43NzQgMy40OTdsMzAuMjg1LTQuOTV6TTkxLjc5IDgwbC00Mi4xNSA2Ljg3bDExLjExNiAxMi42NDZDNzkuMDEgOTcuODgxIDkyLjUgOTIuMDUgOTIuNSA4My4yNzJjMC0xLjE3LS4yNTItMi4yNTctLjcxLTMuMjcxbS00OS4yNzIgOC4wNTVsLTI4LjQ4IDQuNjU1QzIxLjU2NiA5Ny4zNzQgMzQuODUzIDEwMCA1MCAxMDBjLjkxOCAwIDEuODE1LS4wMjYgMi43MTktLjA0NXoiIC8+Cgk8cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Ik01MC4wMDIgMGMtMTYuMyAwLTI5LjY3NCAxMy4zMzMtMjkuNjc0IDI5LjU5NmMwIDYuMjUyIDEuOTg3IDEyLjA3NiA1LjM0MiAxNi44NjVsMTkuMjM0IDMzLjI1bC4wODIuMTA3Yy43NTkuOTkxIDEuNSAxLjc3MyAyLjM3IDIuMzQ4Yy44Ny41NzYgMS45NS45MiAzLjAxLjgxNGMyLjExOC0uMjEyIDMuNDE1LTEuNzA4IDQuNjQ2LTMuMzc2bC4wNjYtLjA4NmwyMS4yMzQtMzYuMTQxbC4wMTItLjAyM2MuNDk4LS45Ljg2Ni0xLjgxNiAxLjE3OC0yLjcwOGEyOS4zIDI5LjMgMCAwIDAgMi4xNy0xMS4wNUM3OS42NzIgMTMuMzMzIDY2LjMwMiAwIDUwLjAwMiAwbTAgMTcuMDQ1YzcuMDcxIDAgMTIuNTkgNS41MDkgMTIuNTkgMTIuNTVjMCA3LjA0My01LjUxOSAxMi41NS0xMi41OSAxMi41NWMtNy4wNzIgMC0xMi41OTQtNS41MDgtMTIuNTk0LTEyLjU1YzAtNy4wNCA1LjUyMy0xMi41NSAxMi41OTQtMTIuNTUiIGNvbG9yPSJjdXJyZW50Q29sb3IiIC8+Cjwvc3ZnPg==`,
+  // 2. Route Path
+  `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+Cgk8cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Ik0yMSAzMkM5LjQ1OSAzMiAwIDQxLjQzIDAgNTIuOTRjMCA0LjQ2IDEuNDI0IDguNjA1IDMuODM1IDEyLjAxMmwxNC42MDMgMjUuMjQ0YzIuMDQ1IDIuNjcyIDMuNDA1IDIuMTY1IDUuMTA2LS4xNGwxNi4xMDYtMjcuNDFjLjMyNS0uNTkuNTgtMS4yMTYuODAzLTEuODU2QTIwLjcgMjAuNyAwIDAgMCA0MiA1Mi45NEM0MiA0MS40MyAzMi41NDQgMzIgMjEgMzJtMCA5LjgxMmM2LjIxNiAwIDExLjE2IDQuOTMxIDExLjE2IDExLjEyOVMyNy4yMTUgNjQuMDY4IDIxIDY0LjA2OFM5Ljg0IDU5LjEzOCA5Ljg0IDUyLjk0MVMxNC43ODYgNDEuODEyIDIxIDQxLjgxMiIgLz4KCTxwYXRoIGZpbGw9ImN1cnJlbnRDb2xvciIgZmlsbC1ydWxlPSJldmVub2RkIiBkPSJNODguMjA5IDM3LjQxMmMtMi4yNDcuMDUtNC41LjE0NS02Ljc1Ny4zMTJsLjM0OCA1LjUzMmExMjYgMTI2IDAgMCAxIDYuNTEzLS4zMDN6bS0xMS45NzUuODJjLTMuNDcuNDMxLTYuOTcgMS4wNDUtMTAuNDMgMi4wMzJsMS4zMDMgNS4zNjFjMy4xNDQtLjg5NiA2LjQwMi0xLjQ3NSA5LjcxMS0xLjg4NnpNNjAuNjIzIDQyLjEyYTI0LjUgMjQuNSAwIDAgMC0zLjAwNCAxLjU4M2wtLjAwNC4wMDVsLS4wMDYuMDAyYy0xLjM3NS44NjYtMi44MjQgMS45NjUtNC4wMDcgMy41NjJjLS44NTcgMS4xNTctMS41NTggMi42Mi0xLjcyMiA0LjM1bDUuMDk1LjU2NWMuMDM4LS40MDYuMjQ2LS45NDIuNjItMS40NDZoLjAwMnYtLjAwMmMuNjAzLS44MTYgMS41MDctMS41NTcgMi41ODItMi4yMzVsLjAwNC0uMDAyYTIwIDIwIDAgMCAxIDIuMzg4LTEuMjU2ek01OCA1NC42NTVsLTMuMzAzIDQuMjM1Yy43ODMuNzE2IDEuNjA0IDEuMjY2IDIuMzk3IDEuNzI2bC4wMS4wMDVsLjAxLjAwNmMyLjYzMiAxLjQ5NyA1LjM0NiAyLjM0MiA3Ljg2MiAzLjE0NGwxLjQ0Ni01LjMxOGMtMi41MTUtLjgwMi00Ljg4Ni0xLjU3Ni02LjkxOC0yLjczYy0uNTgyLS4zMzgtMS4wOTItLjY5MS0xLjUwNC0xLjA2OG0xMy4zMzUgNS4yOTRsLTEuNDEyIDUuMzI3bC42NjguMjA4bC44Mi4yNjJjMi43MTQuODgzIDUuMzE0IDEuODI2IDcuNjM4IDMuMTMxbDIuMzU4LTQuOTJjLTIuODEtMS41NzktNS43MjctMi42MTEtOC41MzgtMy41MjVsLS4wMDgtLjAwMmwtLjg0Mi0uMjY5em0xNC44NjcgNy43bC0zLjYyMyAzLjkyYy44NTYuOTI3IDEuNDk3IDIuMDQyIDEuODA5IDMuMTk0bC4wMDIuMDA2bC4wMDIuMDA5Yy4zNzIgMS4zNDUuMzczIDIuOTI3LjA4MiA0LjUyNWw1LjAyNCAxLjA3MmMuNDEtMi4yNTYuNDc2LTQuNzMzLS4xOTgtNy4xNzhjLS41ODctMi4xNjItMS43MDctNC4wNC0zLjA5OC01LjU0OE04Mi43MiA4Mi42NDNhMTIgMTIgMCAwIDEtMS44MjYgMS41NzJoLS4wMDJjLTEuOCAxLjI2Ni0zLjg4OCAyLjIyLTYuMTA2IDMuMDRsMS42NTQgNS4yNDRjMi40MjYtLjg5NyA0LjkxNy0xLjk5NyA3LjI0NS0zLjYzNWwuMDA2LS4wMDVsLjAwMy0uMDAyYTE3IDE3IDAgMCAwIDIuNjM5LTIuMjg3em0tMTIuNjQgNi4wODljLTMuMjEzLjg2NC02LjQ5NyAxLjUyMi05LjgyMSAyLjA4bC43ODQgNS40NzljMy40MjEtLjU3NSA2Ljg1Ni0xLjI2MiAxMC4yNy0yLjE4em0tMTQuODIyIDIuODM2Yy0zLjM0Ni40NTctNi43MS44My0xMC4wODQgMS4xNDhsLjQ0MiA1LjUyMmMzLjQyNi0uMzIyIDYuODU4LS43MDEgMTAuMjg1LTEuMTd6bS0xNS4xNTUgMS41ODNjLTMuMzgxLjI2OC02Ljc3LjQ4Ni0xMC4xNjIuNjdsLjI1NiA1LjUzNmMzLjQyNS0uMTg1IDYuODUzLS40MDYgMTAuMjgtLjY3OHptLTE1LjI1OS45MmMtMi4wMzMuMDk1LTQuMDcxLjE3My02LjExNC4yNDVsLjE2OCA1LjU0MWE1NjAgNTYwIDAgMCAwIDYuMTY2LS4yNDZ6IiBjb2xvcj0iY3VycmVudENvbG9yIiAvPgo8L3N2Zz4=`,
+  // 3. Map with Route
+  `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+Cgk8cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGZpbGwtcnVsZT0iZXZlbm9kZCIgZD0iTTgzLjExNyAwYy02Ljg4IDAtMTIuNjk4IDQuNzM1LTE0LjM3OSAxMS4wOTJsLTEuODUxLS44NmEyLjUgMi41IDAgMCAwLTIuMTA4IDBMMzQuMTY2IDI0LjQ1M0wzLjU1MyAxMC4yMzNBMi41IDIuNSAwIDAgMCAwIDEyLjV2NzAuMjg3YTIuNSAyLjUgMCAwIDAgMS40NDcgMi4yNjhsMzEuNjY2IDE0LjcwOWEyLjUgMi41IDAgMCAwIDIuMTA4IDBsMzAuNjEzLTE0LjIybDMwLjYxMyAxNC4yMmMxLjY1Ny43NjkgMy41NTMtLjQ0IDMuNTUzLTIuMjY2VjI3LjIxMWEyLjUgMi41IDAgMCAwLTEuNDQ3LTIuMjY4bC0zLjIzLTEuNTAybDEuMDExLTEuNzIyYy4yMy0uNDE3LjQxMy0uODYxLjU3LTEuMzE1QTE0LjcgMTQuNyAwIDAgMCA5OCAxNC44NDJDOTggNi42ODUgOTEuMjk4IDAgODMuMTE3IDBtMCA2Ljk1M2M0LjQwNSAwIDcuOTA4IDMuNDk2IDcuOTA4IDcuODg5YzAgNC4zOTItMy41MDMgNy44ODUtNy45MDggNy44ODVzLTcuOTA4LTMuNDkzLTcuOTA4LTcuODg1YzAtNC4zOTMgMy41MDMtNy44ODkgNy45MDgtNy44ODltLTE2LjE2NiA4LjgyMmwxLjM3Ny42NDFhMTQuNyAxNC43IDAgMCAwIDIuNjI1IDYuOTM4bDEwLjM0OCAxNy44OWMxLjQ1IDEuODk0IDIuNDE0IDEuNTM0IDMuNjE5LS4xbDcuODU3LTEzLjM3M0w5NSAyOC44MDVWOTMuNThMNjcuMzIyIDgwLjcyM2wtLjIyNi0zOS42NzZjLjQwOC4wODguODE1LjE3MyAxLjIyNC4yN2wuOTItMy44OTFhNjQgNjQgMCAwIDAtMi4xNjgtLjQ3M3ptLTIuOTk4LjM1NGwuMTE1IDIwLjMzNmEzNCAzNCAwIDAgMC0zLjExMy0uMjgxbC0uMTQ4IDMuOTk2YzEuMDg4LjA0IDIuMTg1LjE1OCAzLjI4NS4zMThsLjIzIDQwLjIzNGwtMjguNjc2IDEzLjMyM2wtLjM2OS02NC42MDR6TTUgMTYuNDE4bDI3LjI3NSAxMi42N2wuMzcxIDY0Ljk0N0w1IDgxLjE5MXptNTEuNTQzIDIwLjAzOWMtMS4zNzcuMjQ3LTIuNzg2LjY4OC00LjA5OCAxLjQ1MWE5LjkzIDkuOTMgMCAwIDAtMy43MzIgMy44MmwzLjUwMiAxLjkzMmE2IDYgMCAwIDEgMi4yMjYtMi4yODlsLjAwNi0uMDA0bC4wMDYtLjAwNGMuODA3LS40NyAxLjc2OC0uNzg2IDIuNzk3LS45N3ptMTYuNjY2IDIuMDMxbC0xLjEzMyAzLjgzNGMyLjUwMy43NCA0Ljk4MiAxLjU5IDcuNDQ3IDIuNTFsMS4zOTktMy43NDhjLTIuNTMyLS45NDQtNS4xLTEuODI0LTcuNzEzLTIuNTk2bS0yNi4wMDIgNy41OTZsLS4wMy4xNThsLS4wMDMuMDE0Yy0uNDk5IDIuODMxLS40NDYgNS42MTctLjMzNCA4LjI2NWwzLjk5Ni0uMTdjLS4xMDktMi41NjktLjEzMi01LjA1NS4yNzctNy4zODhsLjAyNC0uMTI1em0zLjg2NyAxMi4yMWwtMy45OS4yN2MuMTggMi42NjkuMzcyIDUuMjg1LjM2NSA3Ljg1bDQgLjAxYy4wMDgtMi43Ny0uMTk1LTUuNDc4LS4zNzUtOC4xM20tMy44MjQgMTEuODljLS4xMS45NTMtLjI3NCAxLjg4LS41MTQgMi43N2wtLjAwMi4wMDVsLS4wMDIuMDA4Yy0uMzUgMS4zMzUtLjkzOSAyLjU3MS0xLjc2MSAzLjUzOWwzLjA0NyAyLjU5YzEuMjg4LTEuNTE1IDIuMTA1LTMuMjk4IDIuNTgtNS4xMDJsLjAwMi0uMDA2Yy4zLTEuMTE2LjQ5NS0yLjI0LjYyMy0zLjM1em0tMzMuNzY4IDMuODk4bC0xLjc5NiAzLjU3NGMyLjQ4IDEuMjQ3IDUuMDQ1IDIuMjc4IDcuNjI4IDMuMTdsMS4zMDUtMy43ODFjLTIuNDU1LS44NDctNC44NTItMS44MTUtNy4xMzctMi45NjNtMTAuODM2IDQuMTEzbC0xLjA2NCAzLjg1NmMyLjY0Ni43MzEgNS4zNjYgMS4zMTIgOC4xNDYgMS42MjVsLjQ0Ni0zLjk3NWMtMi41MjEtLjI4My01LjAzNS0uODE3LTcuNTI4LTEuNTA2bTE4LjE0MS4yODJjLTEuOTkyIDEuMDItNC4zOTcgMS4zOTctNi44NyAxLjQyN2wuMDUgNGMyLjgzNC0uMDM0IDUuODY0LS40NDQgOC42NDItMS44Njd6IiBjb2xvcj0iY3VycmVudENvbG9yIiAvPgo8L3N2Zz4=`,
+  // 4. Printer
+  `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+Cgk8cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Ik0xNC42NDMgMmEyLjUgMi41IDAgMCAwLTIuNSAyLjV2MTkuNTE0YzEuNjY2LS4wMDMgMy4zMzMtLjAxIDUtLjAxVjdoNTh2MTYuOTkybDUtLjAwMlY0LjVhMi41IDIuNSAwIDAgMC0yLjUtMi41Wk02LjUgMjhBNi40ODYgNi40ODYgMCAwIDAgMCAzNC41djI3QzAgNjUuMTAxIDIuODk5IDY4IDYuNSA2OGg1LjY0M3YyNy41YTIuNSAyLjUgMCAwIDAgMi41IDIuNWg2M2EyLjUgMi41IDAgMCAwIDIuNS0yLjVWNjhIOTMuNWMzLjYwMSAwIDYuNS0yLjg5OSA2LjUtNi41di0yN2MwLTMuNjAxLTIuODk5LTYuNS02LjUtNi41Wm04My40NCA2SDkwYTQgNCAwIDEgMS0uMDYgME0xNy4xNDIgNDhoNHY0MWg1MVY0OGg0djQ1aC01OXptMTEuNzkzIDBINDAuMzdjLS4yMDMuNjM2LS40NzcgMS40MjItMS4xNCAxLjUxOGMyLjI5LjI4NS0uODEgMS4wOTEtMS4xOTYgMi4xMzZjLjc4My4wNCAxLjIxNC0xLjczMyAyLjE1NC0uMzMyYy0uMzI9IDEuMjktLjczNS0xLjEwOC0xLjM1NS43MTFjLTEuNDkzIDEuMDMgMS42NDIgMi43MyAxLjYyMyAyLjc1Yy0uNjU5LTEuNDYzLS41MzQtMi42NC41NDMtMy4wODZjLjYxMi0xLjE9My4wMDEtMi4yNS4zMTYtMy42OTdoMTEuNjg4Yy40My4yOC44NjIuNTcyIDEuMzA3Ljg3MWMxLjQyNSAyLjQxOC0yLjc5NyAzLjI1NC00LjMzMiAyLjg3MWMtMS4wNi4xNDEtMi41MjIuNzA1LTMuMTE2IDEuMTA2Yy0uMzQzIDEuNTQzLjM3OSA0LjM1MS0yLjE2NCA0LjY2NmMtMS45OTkuNjU1LTMuNTgtMy4wMDctNC45NTktMS41NzVjLTIuMDM5IDEuMDIzLS42Ni0zLjAyNi0yLjM3My0uOTA4Yy0uNTc2LS4wODUtMS4wNzYtMi4wNjMtLjY3OC4xMDhjLS41OTguMTI2LTIuMDc1LS42MTktLjUwMS41MTdjLS4yIDEuNDQxLTEuNjMyLS43Ny0yLjM3Ny0uNzM4Yy43MzUtLjcxNiAzLjYzMy0uNzc1IDEuNjU0LTIuMjg1Yy0uMTIzNC4zMjYtMS41OTQtLjcyNi0uMi0uNWMuNzY3LTEuNzcxLTEuMzEzLTEuODc3LTEuODgtMi43OTFjLjIyNCAxLjI3LTEuNjI5LjgwMS0yLjI3OC4xNTZjLjMgMS41OTYgMi42NTcuODY1IDMuNzMgMS43OTdjMS4yNDYgMS40MTUtMi4wODkuMTMtLjcxMiAxLjY4MmMtMi4wNzcuOTM2LTMuNzY1LTEuNzgyLTUuNDY3LTIuOGMtLjYxMi0xLjA5Mi0uMjM1LTEuNTczLjI3OC0yLjE3N200LjQ0OSAxLjM0MmEyIDIgMCAwIDAtLjE0NS0uNDg4YS45LjkgMCAwIDAgLjE0NS40ODhNNjUuOTUgNDhoMS40ODNsMS45OTYgMTAuNzRjLTEuODU2LS45NzItMi41MDgtMy4yNTMtMy41OTQtNC41MzVjMS4zOS0xLjIyLS4zMTEtMy4xMS42NjYtNC42NGMtLjI2LS42My0uNDU4LTEuMTEyLS41NS0xLjU2NW0tNDIuNDE2IDEuMzc1YzEuMzc5Ljc2Mi0xLjI2NiAxLjQxOCAwIDBtMTAuNzA3LjI5Yy0uNzQ4LjI1NC4zODUuMjMgMCAwbS0xMC45NjMuODU1YzEuNjQ3LjMwMyAxLjA4NSAxLjEzNy0uMDU4IDEuMTJjLjAxMi0uMzYyLS4xMS0uNzc0LjA1OC0xLjEybTEwLjg5OS4wMDNjLjk5Ny4zNy0uNDY0LjQ0OCAwIDBtNC45MjYgMS43OTNjMS45ODQuNDc5LTEuNjEyLjI3MiAwIDBtLTcuODcgNC40MTRjMi4wNzMgMS4wMzQtLjU2OCAyLjk2Ni0uNDg2IDEuNTQzYy4zLS41NjMtLjc2Mi0xLjM1LjQ4Ni0xLjU0M20xMC43OTEuMDRjLjQ2LjE2OC0uMzAyLjIyNyAwIDBtLjA5LjI2M3MuNDQ1LjI0Mi0uNDU0Ljc3NyAwIDBtLTE4LjAyMy40MjJjLjcyNC44NjkgMi4yNzYtLjMxMyAyLjE4Ny43MzJjLjk1NC0xIC4zNDIgMS43MTIuOTE2LjAwNGMuNzY2LjEwNC0uNjkgMS4xMzUuNzA1LS4wMTFjMS4yMTgtLjI4Ny40MTMuNTU3IDEuMTguMTg1YzEuMDYgMS43NjMgMi4wODggMy43NiA0LjMyIDMuODRjLS4xMTcgMi4wMzUtMy4yMTkgMi4xNjgtNC40OTIgMS43MjNjLjgyIDEuMjYzLS42MzMuMDgzLS42MTUuMDgyYy0uMjEyIDEuMTk4LTMuMDc3LjE1Ni0zLjQ4MiAyLjAyYy44OTIgMS4yMjYtLjkxMSAxLjU3MS0xLjIyNyAxLjQ5Yy0uODQ2LS4xMTItLjE2OS0zLjg5Ny0uMzktNS4zMjdjLjI5LTEuNDgyLS43MjMtNC4zNDEuODk4LTQuNzM4bS42NS4zNzljLTEuMDI0LjAzNS4xOTEuNzIyIDAgMG0yNC4xOSAyLjk3OGMyLjUyNy41MjMgMy42MSAyLjQyNyA1LjczIDMuNzAyYy42NjkuNjU2IDEuMjgzIDEuOTEgMi4yNDYgMi4wMTdjLjg2OC4zNjIgMi4xOTcgMS4xODQgMy4xMjcuMDIyYy44MyAxLjYyOS0xLjk4IDIuMzEtMi43MjggMS43NDJjLTEuNzc1LjE4OC00LjAxLS44MDQtNi4wNTEtLjYxNWMtLjk2OCAxLjMyNi0yLjk4NyAyLjc1My00LjQ2NyAxLjMxNmMtMS4yMDYuNy0yLjAzIDMuMzcyLTIuODMgNS4xNDNjLS44MDcuMTYxLTMuNzcgMi43NTItMS41MjMgMS4yMTNjMS43ODMtLjkwMy0uNjkgMS4wOS0xLjM5OSAxLjI3NWMtMS4xNTIgMS43ODktMy42NS44NjYtNC45NzggMi4wMjVjLTEuNDY4LjM2My0zLjE5MSAyLjgyLTIuNjUzIDMuNTM0Yy41NjEgMS4xMDUtLjYzOC45ODcuNjQgMS4yMDljLS4wMjQtLjcgMS4wMy40NTYuMzEzLjQ0N2MxLjAyMi42NTggMS4yMzkgMi43MjkuMTE4LjY4MmMtLjc1MS0uODIyLTEuMzYxIDIuOTA2LTIuNTUuNDE4Yy0uMTI3LjE4Mi0xLjI3MyAyLjAzLTEuMjQxLjM0MmMuMDY4LS43MjUtMS4zNyAxLjU0Ny0xLjY2My0uMDMxYy0yLjAzOC0xLjMyMy4zMi0zLjcwNS4yMTUtNS40MTJjLTEuMDE3LTEuNjYzLS4xNzQtMS40MS0uMTAxLTIuOTE4Yy45OS0xLjIyNy43NTYtMi4yNDcuNTktMy45MDZjLTEuNzA3LjUyMS40MzItMS40OS0xLjIzMy0uNDJjLS44MTQtLjEzMi0zLjI1Ni0uMTg2LTEuODEyLTEuMTk0YzEuMTE1IDEuMTE4IDIuNDcyLjA4MSAzLjAzOS0uNTIxYzEuMjc3LS4zMDUtMS40MTEtLjY4Ny0xLjM1LjM1NWMtMi44Ny42NS0xLjg1NS0yLjg5My0uMDk2LTMuNzUyYzEuMTItLjU4NiAxLjU1OC0xLjE0NiAyLjcxLTEuNDY4Yy43MDQuNTA5LS41NzEgMS4zLjg1NS40MDhjMS42NTctLjEwNC0uMDgzIDIuMDQ2LS41NSAyLjY0Yy0uMTg3LTEuNzMyLTIuOTItLjQyNi0yLjE2NS43OTVjMS41MDgtLjY4MyAxLjc0OCAxLjI4NSAyLjgwNS0uNDU5Yy40NjYuOTEyLS4zNTggMS40ODItLjQ0OCAxLjM1NGMxLjUzNSAyLjYzNyAzLjI3LjYzIDMuOTA3LS45N2MxLjk3Ni0uNzE4LTEuNDY4LS43Mi0xLjg3Ny0uNzQzYy0yLjUwNi40NzctLjIyNy0xLjk2My4zLTIuMTljLTEuNTcyLS43NDggMS43NS0xLjEwOCAxLjk2NS0yLjEzNGMuNzAyLjQ4NyAxLjkzOC0xLjQyMiAxLjgwMS4xNDJjLjE3NSAxLjI4My0yLjA3OC0uMjkzLS43MTkgMS4wNjVjLS4xNzQgMS4xODEtLjEuNzM9LjgyLjExOWMtLjAyOC0xLjM4LjkyOC45NTMuNzc4IDEuMzNjMS4xNjIuNTM4IDIuNjM1IDIuNDA1IDQuMzQ2IDIuMjM2Yy0yLjA0NS4zNjYtLjkzIDQuMjYgMS4wOTcgMi43NThjLjM0OS0uODQxLTEuNDMzLTIuMjE1LjU4Ni0xLjQ1Yy41OS0xLjIxNSAyLjA3NS0xLjQ2My45MjgtMy4zNTdjLS4wNy0xLjk0NSAxLjQ3LTMuMjI4IDIuMjctNC40OThjLjU1Ny0uNjM0LjMyMi0yLjAxOSAxLjI0OC0yLjI1Mm0xNC4zNzMgNC4wOTZjMS43MSAxLjUzNSA0LjI2Ni4xIDYuMDM5Ljc4NWMuMzY1IDIuNTQ1LjA5NSA1LjIzMi4xNzQgNy44MzhjLTEuNDIuNTU3LTIuNTgyLS4xNTctMS41OC0xLjY4MWMtLjI3Mi0xLTI2LjY0My0zLjc4LS4xMDYtMy43OWMtLjM3My43MTItMi4xNDUuNDU0LTEuNzc3LS43N2MtMS4wMDctLjM2MS0yLjgzLS45NTctMi43NS0yLjM4Mk00NC4xMjkgNjYuNjZjLjQ3OC40OC0uNDcuNTM4IDAgMG0tLjA0LjQ3M2MuODk3IDEuMTU0LTEuMjE2Ljg5NCAwIDBtLS4wOTMuODU1Yy40NS40NTQtLjgzMyAxLjI3NC0uNTMxIDIuMzgxYy0uOTMyLS40MTkuMDE4LTIuMDMuNTMxLTIuMzhtLS40NDMuMDgyYy4zNDEuMjE4LS42MTYuMTcgMCAwbS0uMzI4LjA5Yy41MjIuMTYyLS40MTkuNDkgMCAwbS0xMy4yMjMuMjk5YzEuMS42NTQtLjk4LjQzIDAgMG0tNi43MDMuMDY0YzEuMDcuNzY1IDEuOTAyLjYzMiAxLjQ1NSAyLjQ3NWMuNjA2LjY1LjE2LTMuMDY0IDEuMzIyLTEuMThjLjYgMS44MjQtMS4wODcgMi4yNDUtMS45OTggMi43ODdjLjU5NC0xLjE2LjE0NS0xLjcwOC0uNzQ4LTEuOTU5Yy0uMTA3LS42OC0uMjc1LTEuNDU2LS4wMzEtMi4xMjNtMjAuODcuMTVjLjQyLjg1Ni0uNTU2LjM2NiAwIDBtLTEuNjYuMTdjLjM4My4yODUtLjYwMy42NCAwIDBtLjMzOS4wODljLjQ1LjMzNy0uNTk2LjE5MyAwIDBtLTEwLjM2OC4zMTZjLjg5Ni4wMS0uMTgyLjYyNyAwIDBtLS4yMjYuNDljLjk2Ni40MzEtLjE4Mi43NzIgMCAwbTYuMDMuMDQ3Yy0xLjExMy40MTMuNjUuMTMgMCAwbS0uODMuNjA0Yy0uNjQyIDEuMDk3LjU2OSAxLjQ3OCAwIDBtLTEzLjg4IDEuNDkyYy42MDYgMS4xNTUtMS4xNTQgMS4xMjQgMCAwbTIuMjIuMDU2Yy43MiAxLjA2NS0xLjYzNS4yNyAwIDBtMS40NjIuNTIyYTEgMSAwIDAgMSAuMzE2LjAzYzEuNDE2LjQ1NS0uNzQzIDEuNjEyLS42MzguOTExYy0xLjE4Ny0uMDYtLjQzMS0uODg4LjMyMi0uOTQxbS0yLjU4Ni4yMzZjLjEwNS0uMDEzLjI0Mi0uMDEuNDIuMDEyYzEuMzg4LjEyNC0uMjAzIDEuMTQzLS42MjcgMS4zOTdjLjMwNS0uNDU1LS41My0xLjMxOC4yMDctMS40MDltLTEuMzQyLjI2NmMuNzEzIDEuMjA5LS43MDMuOTU4IDAgMG01LjU0OS4zMzZjMS40NjkuNDE1LjYwNyAzLjg2Mi0uMjggMi45MzVjLS42NzIgMS4wMzQtMS40NTguMTg1LS4zMTIgMS40MTZjLTEuNTE4IDEuNTE2LTMuNDk0LS43Ny0xLjI4LTEuODY1Yy42MjMtLjg1Ny0xLjQ3LTEuOTE1LjctMS42OTVjLjY4Mi4xMTkuNjk0LS42MDkgMS4xNzItLjc5MW0tMy4yNzcuNTU1Yy45NiAxLjQxNy0uMTc9IDMuNDg3LS45MDkgMi43OThjMS4yOTUgMi4zNjYtMi43MzMtMS4yMTUtLjA1OC0uMjczYy0uNTA2LS42MTYgMS4zNzUtMS41NTQtLjMxMy0xLjI4N2MtLjAyOC0uNTQ4IDEuMjA2LS44OSAxLjI4LTEuMjM4bTQzLjg2My4xODVjLS4wMDYgMS43NS4yMDggNS44MTMtLjExNSA1Ljk5Yy0uODA5LTEuNTE1LTEuMDI0LTIuNjA0LS40NDgtNC4yNDhjMS4yNTctMS4wMjUtLjQ2LTEuMzM4LjU2My0xLjc0Mm0tNDYuMjE3IDEuMDI1YzEuNTQxLjE3NS0uNjI0IDIuMDA2IDAgMG03LjY1IDEuNjIyYy0uNzcuNjkgMS4xNSAxLjA3NiAwIDBtNC44NDQgMi40NDFjLjEtLjAwOC4yMjMtLjAwMi4zNzEuMDI3Yy0uNjcyLjg0Mi0xLjA3NC4wMzItLjM3LS4wMjdtOC4xODYgNC40NDdjLjIwNC43NDQtMS4yNyAxLjA1MyAwIDBtLS41MjYuODU4Yy4zMDguMjItLjMwOC4yMiAwIDBtLTEwLjA0NiAxLjIxM2MuNjI5LjUyMi0uNTg4LjUwOCAwIDBtMi4xMi4wNDNjLjY3LjU5Mi0uNDM4LjM0OCAwIDAiIGNvbG9yPSJjdXJyZW50Q29sb3IiIC8+Cjwvc3ZnPg==`,
+];
+
+// Add distinctive colors for each step of the animation
+const STEP_COLORS = [
+  'from-orange-400 to-pink-500', // Pin - Warm/Excitement
+  'from-blue-500 to-cyan-400',   // Route - Logical/Calm
+  'from-emerald-400 to-green-500', // Map - Nature/Grounding
+  'from-purple-500 to-indigo-500' // Itinerary - Premium/Final
+];
+
+const LOADING_STEPS = [
+  { label: '목적지 분석 중...', subtext: '숨겨진 명소 탐색', iconIndex: 0 },
+  { label: '최적 경로 계산 중...', subtext: '최적 경로 계산', iconIndex: 1 },
+  { label: '여정 지도 생성 중...', subtext: '취향에 맞는 루트 생성', iconIndex: 2 },
+  { label: '일정 마무리 중...', subtext: '최종 루트 출력', iconIndex: 3 },
+];
 
 interface TripPlannerProps {
   isOpen: boolean;
@@ -38,6 +66,14 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
   const [isGroupSizeOther, setIsGroupSizeOther] = useState(false);
   const [isTransportOther, setIsTransportOther] = useState(false);
   
+  // Loading Animation State
+  const [activeLoadingStep, setActiveLoadingStep] = useState(0);
+  
+  // 2. 알림창 제어를 위한 State 추가 (컴포넌트 내부에 추가해주세요)
+  const [currentLog, setCurrentLog] = useState("여행 생성 요청 중..."); // 현재 표시할 메시지
+  const [showLog, setShowLog] = useState(false); // 알림창 보임/숨김 여부
+  const lastLogRef = useRef(""); // 중복 메시지 깜빡임 방지용
+
   // Calendar State
   const [currentMonth, setCurrentMonth] = useState(new Date());
 
@@ -76,6 +112,17 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen]);
 
+
+  // Loading Animation Timer
+  useEffect(() => {
+    if (isLoading) {
+      const interval = setInterval(() => {
+        setActiveLoadingStep((prev) => (prev + 1) % LOADING_STEPS.length);
+      }, 5000); // 5 seconds per step as requested
+      return () => clearInterval(interval);
+    }
+  }, [isLoading]);
+
   // Enter 키로 다음 단계 이동 (review 단계에서만)
   useEffect(() => {
     if (!isOpen) return;
@@ -95,11 +142,17 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen, currentStep]);
 
-  const handleNext = async () => {
+const handleNext = async () => {
     if (currentStep < steps.length - 1) {
       setCurrentStep(prev => prev + 1);
     } else {
+        // 마지막 단계: 로딩 시작
         setIsLoading(true);
+        setShowLog(true); // 로딩 시작되자마자 알림창 띄우기
+
+        // [중요] 기존의 setTimeout(..., 20000) 코드는 삭제했습니다.
+        // 실제 백엔드 응답에 맞춰서 종료되도록 변경합니다.
+
       try {
         // 1. Flask 서버에 데이터 전송
         const response = await fetch('http://127.0.0.1:5000/api/create-trip', {
@@ -117,32 +170,40 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
         const data = await response.json();
         const { taskId } = data;
 
-        // 2. 작업이 완료될 때까지 2초마다 상태 확인 (Polling)
+        // 2. 상태 확인 폴링 (1초 간격으로 변경하여 반응 속도 향상)
         const pollStatus = setInterval(async () => {
           try {
             const statusResponse = await fetch(`http://127.0.0.1:5000/status/${taskId}`);
             const statusData = await statusResponse.json();
 
+            // [추가된 부분] 백엔드 메시지를 화면에 반영 (메시지가 바뀌었을 때만)
+            if (statusData.message && statusData.message !== lastLogRef.current) {
+                lastLogRef.current = statusData.message;
+                
+                setShowLog(false); // 1. 살짝 숨기고 (애니메이션)
+                setTimeout(() => {
+                    setCurrentLog(statusData.message); // 2. 내용 바꾸고
+                    setShowLog(true); // 3. 다시 표시
+                }, 200);
+            }
+
             if (statusData.done) {
-              clearInterval(pollStatus); // 상태 확인 중단
-              setIsLoading(false);
+              clearInterval(pollStatus); // 폴링 중단
+              setIsLoading(false); // 로딩 끝 (이때 모든 애니메이션이 멈춥니다)
 
               if (statusData.success) {
-                // 3. 성공 시, chat-map 페이지로 이동
+                // 성공 시 이동
                 window.location.href = `http://127.0.0.1:5000/chat-map/${taskId}`;
               } else {
-                // 4. 실패 시, 에러 처리 (여기서는 간단히 alert)
                 alert(`여행 생성 실패: ${statusData.error || '알 수 없는 오류'}`);
-                onClose(); // 모달 닫기
+                onClose();
               }
             }
           } catch (error) {
-            clearInterval(pollStatus);
-            setIsLoading(false);
-            alert('상태 확인 중 오류가 발생했습니다.');
-            onClose();
+            // 에러 발생 시에도 계속 시도 (네트워크 일시적 끊김 대비)
+            console.warn("Polling error, retrying...", error);
           }
-        }, 2000); // 2초 간격으로 확인
+        }, 1000); // 1초마다 확인
 
       } catch (error) {
         setIsLoading(false);
@@ -286,16 +347,201 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
   // --------------------------------------------------------------------------
   if (isLoading) {
     return (
-      <div className="fixed inset-0 z-[60] bg-white flex flex-col items-center justify-center">
-        <div className="relative">
-          <div className="absolute inset-0 bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 blur-xl opacity-20 animate-pulse rounded-full"></div>
-          <Sparkles className="w-16 h-16 text-black animate-spin-slow relative z-10" />
+      <div className="fixed inset-0 z-[60] bg-gray-50 flex flex-col lg:flex-row items-center justify-center p-6 lg:p-24 gap-12 lg:gap-24 overflow-hidden">
+        
+        {/* Left: Status Text */}
+        <div className="flex-1 max-w-xl space-y-8 animate-fade-in-up z-10 text-left">
+            <h2 className="text-4xl md:text-6xl font-serif font-bold text-black leading-[1.3] mb-3">
+              여행 경로를<br />
+              <span className="text-gray-400 font-light">설계하는 중입니다</span>
+            </h2>
+
+            <p className="text-xl md:text-2xl text-gray-500 font-medium animate-pulse">
+                AI가 최적의 루트를 분석하고 있습니다
+            </p>
+            
+            <div className="space-y-6 pt-8">
+              <div className="flex items-center gap-4">
+                <div className="relative">
+                    <div className="w-3 h-3 bg-black rounded-full animate-ping absolute opacity-75"></div>
+                    <div className="w-3 h-3 bg-black rounded-full relative"></div>
+                </div>
+                <p className="text-sm font-bold tracking-[0.2em] uppercase text-gray-800">취향 분석</p>
+              </div>
+              <div className="flex items-center gap-4">
+                 <div className="relative">
+                    <div className="w-3 h-3 bg-black rounded-full animate-ping absolute opacity-75 delay-150"></div>
+                    <div className="w-3 h-3 bg-black rounded-full relative"></div>
+                </div>
+                <p className="text-sm font-bold tracking-[0.2em] uppercase text-gray-800">경로 최적화</p>
+              </div>
+              <div className="flex items-center gap-4">
+                 <div className="relative">
+                    <div className="w-3 h-3 bg-black rounded-full animate-ping absolute opacity-75 delay-300"></div>
+                    <div className="w-3 h-3 bg-black rounded-full relative"></div>
+                </div>
+                <p className="text-sm font-bold tracking-[0.2em] uppercase text-gray-800">주어진 개인 조건 반영</p>
+              </div>
+            </div>
         </div>
-        <h2 className="mt-8 text-3xl font-serif font-bold text-black animate-pulse">여행 경로를 설계하는 중입니다...</h2>
-        <p className="mt-4 text-gray-500 font-sans text-sm tracking-widest uppercase">AI가 최적의 루트를 분석하고 있습니다</p>
+
+        {/* Right: The Monitor/Device Screen */}
+        <div className="flex-1 w-full max-w-3xl animate-fade-in-up delay-200 perspective-1000 relative lg:-translate-x-32 lg:-translate-y-24">
+             
+             {/* 1. MAIN MONITOR (Spline Map) */}
+             {/* Changed aspect ratio to 4:3 as requested to prefer top/bottom bars over side bars */}
+             <div className="relative aspect-[4/3] w-full bg-white rounded-[2rem] shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)] overflow-hidden border-[6px] border-white ring-1 ring-gray-900/5 transition-transform hover:scale-[1.01] duration-700 ease-out z-10">
+                
+                {/* Window Controls */}
+                <div className="absolute top-0 left-0 right-0 h-10 bg-gray-50/90 backdrop-blur-sm border-b border-gray-100 flex items-center px-5 gap-2 z-10">
+                   <div className="w-3 h-3 rounded-full bg-[#FF5F56] shadow-sm"></div>
+                   <div className="w-3 h-3 rounded-full bg-[#FFBD2E] shadow-sm"></div>
+                   <div className="w-3 h-3 rounded-full bg-[#27C93F] shadow-sm"></div>
+                   
+                   {/* Fake Address Bar */}
+                   <div className="ml-4 flex-1 h-5 bg-gray-200/50 rounded-md flex items-center justify-center">
+                        <div className="w-20 h-1.5 bg-gray-300 rounded-full"></div>
+                   </div>
+                </div>
+                
+                {/* ▼▼▼ [새로 추가하는 부분] 알림창 (Notification Popup) ▼▼▼ */}
+                <div 
+                    className={`absolute top-12 left-4 right-4 md:left-6 md:right-6 z-30 transition-all duration-500 ease-out will-change-transform transform 
+                        ${showLog ? 'translate-y-0 opacity-100' : '-translate-y-4 opacity-0 pointer-events-none'}
+                    `}
+                >
+                    <div className="bg-white/90 backdrop-blur-md rounded-[20px] p-4 shadow-[0_8px_30px_rgba(0,0,0,0.12)] border border-white/50 flex items-center gap-4 max-w-2xl mx-auto">
+                        {/* 앱 아이콘 */}
+                        <div className="w-10 h-10 rounded-[10px] bg-gradient-to-b from-white to-gray-50 flex items-center justify-center shadow-[0_1px_3px_rgba(0,0,0,0.1)] border border-black/5 flex-shrink-0">
+                            <Map className="w-6 h-6 text-black" strokeWidth={1.5} />
+                        </div>
+                        
+                        {/* 텍스트 내용 */}
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-0.5">
+                                <h3 className="text-[13px] font-bold text-black tracking-tight">RoutePick AI</h3>
+                                <span className="text-[11px] text-gray-500 font-medium">실시간</span>
+                            </div>
+                            <p className="text-[13px] text-gray-900 font-medium leading-snug truncate pr-2">
+                                {currentLog}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                {/* ▲▲▲ [추가 완료] ▲▲▲ */}                
+                
+                {/* Screen Content - Spline Map */}
+                <div className="absolute inset-0 pt-10 bg-gray-100 overflow-hidden">
+                    <iframe 
+                      src='https://my.spline.design/mapcopycopy-eHtXE3Yw41nPzqesI8XblKSL-AOA/' 
+                      frameBorder='0' 
+                      width='100%' 
+                      height='100%'
+                      className="w-full h-full origin-center"
+                      title="Route Generation 3D"
+                      style={{ border: 'none' }}
+                  ></iframe>
+                </div>
+                
+                {/* Subtle Inner Shadow for Depth */}
+                <div className="absolute inset-0 pointer-events-none shadow-[inset_0_0_40px_rgba(0,0,0,0.05)] rounded-[1.5rem] z-20"></div>
+             </div>
+
+             {/* 2. THE TABLET (iPad Landscape) */}
+             {/* Replaced iPhone with iPad: aspect-[4/3], larger width, positioned to overlap bottom-right */}
+             <div className="absolute -bottom-20 -right-10 md:-bottom-48 md:-right-36 w-64 md:w-[58%] aspect-[4/3] bg-gray-900 rounded-[1.5rem] p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-30 transform rotate-[6deg] hover:rotate-0 transition-transform duration-500 hidden md:block border border-gray-800">
+                <div className="w-full h-full bg-white rounded-[1.2rem] overflow-hidden relative border border-gray-100">
+                    
+                    {/* Screen Content - Sequential Animation */}
+                    <div className="w-full h-full flex flex-col items-center justify-center p-6 bg-gray-50">
+                        {/* Decorative Background Elements */}
+                        <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none opacity-40">
+                            <div className="absolute top-[-20%] left-[-20%] w-[80%] h-[50%] bg-blue-100 rounded-full blur-[40px] animate-pulse" />
+                            <div className="absolute bottom-[-20%] right-[-20%] w-[80%] h-[50%] bg-indigo-50 rounded-full blur-[40px] animate-pulse delay-700" />
+                        </div>
+
+                        {/* Icon Container - Signigicantly Larger to fill removed text space. */}
+                        <div className="relative w-32 h-32 md:w-40 md:h-40 mb-8 flex items-center justify-center">
+                            {LOADING_STEPS.map((step, index) => {
+                                const isActive = index === activeLoadingStep;
+                                const gradientClass = STEP_COLORS[step.iconIndex % STEP_COLORS.length];
+                                
+                                return (
+                                    <div
+                                    key={index}
+                                    className={`absolute top-0 left-0 w-full h-full flex items-center justify-center transition-all duration-700 ease-[cubic-bezier(0.4,0,0.2,1)]
+                                        ${isActive 
+                                        ? 'opacity-100 blur-0 scale-100 translate-y-0 z-10' 
+                                        : 'opacity-0 blur-lg scale-90 translate-y-4 z-0'
+                                        }
+                                    `}
+                                    >
+                                    {/* COLOR GRADIENT APPLIED HERE - Larger Size */}
+                                    <div 
+                                        className={`w-24 h-24 md:w-32 md:h-32 bg-gradient-to-tr ${gradientClass} shadow-lg`}
+                                        style={{
+                                        maskImage: `url("${ICONS[step.iconIndex]}")`,
+                                        WebkitMaskImage: `url("${ICONS[step.iconIndex]}")`,
+                                        maskSize: 'contain',
+                                        WebkitMaskSize: 'contain',
+                                        maskRepeat: 'no-repeat',
+                                        WebkitMaskRepeat: 'no-repeat',
+                                        maskPosition: 'center',
+                                        WebkitMaskPosition: 'center',
+                                        }}
+                                    />
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        {/* Text Container - Restored to Subtle Gray Style */}
+                        <div className="h-12 w-full flex flex-col items-center justify-center relative text-center">
+                            {LOADING_STEPS.map((step, index) => {
+                            const isActive = index === activeLoadingStep;
+                            return (
+                                <div 
+                                    key={index}
+                                    className={`absolute inset-0 flex flex-col items-center justify-center transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]
+                                    ${isActive 
+                                        ? 'opacity-100 translate-y-0 blur-0' 
+                                        : 'opacity-0 translate-y-2 blur-sm'
+                                    }
+                                    `}
+                                >
+                                    {/* Removed Black Label, Only Small Gray Subtext Remaining */}
+                                    <p className="text-sm text-gray-400 font-bold uppercase tracking-widest leading-tight">
+                                        {step.subtext}
+                                    </p>
+                                </div>
+                            );
+                            })}
+                        </div>
+
+                        {/* Progress Dots */}
+                        <div className="w-full mt-10 flex gap-1.5 justify-center">
+                            {LOADING_STEPS.map((_, index) => (
+                            <div 
+                                key={index} 
+                                className={`h-1.5 rounded-full transition-all duration-300
+                                    ${index === activeLoadingStep ? 'w-4 bg-black' : 'w-1.5 bg-gray-300'}
+                                `}
+                            />
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Home Indicator (Longer for iPad) */}
+                    <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-1/4 h-1 bg-gray-900 rounded-full opacity-20"></div>
+                </div>
+             </div>
+
+        </div>
+
       </div>
     );
   }
+
 
   // --------------------------------------------------------------------------
   // COMPLETED
