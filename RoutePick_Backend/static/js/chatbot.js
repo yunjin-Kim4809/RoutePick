@@ -28,9 +28,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 appendMessage('bot', '안녕하세요! 😊 RoutePick AI 가이드입니다. 코스에 대해 궁금한 점이 있으시면 언제든지 물어보세요!', true);
                 
                 // 코스 설명 표시
-                if (data.course_description) {
-                    appendMessage('bot', `<div style="margin-bottom: 12px;"><strong style="font-size: 1.15em; color: #C5A683; display: block; margin-bottom: 8px;">📝 코스 설명</strong></div>${data.course_description}`, true);
-                }
+                // if (data.course_description) {
+                //     appendMessage('bot', `<div style="margin-bottom: 12px;"><strong style="font-size: 1.15em; color: #C5A683; display: block; margin-bottom: 8px;">📝 코스 설명</strong></div>${data.course_description}`, true);
+                // }
                 
                 // 방문 순서 표시
                 const sequence = data.sequence || [];
@@ -64,7 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // 선정 이유 표시
                 if (data.reasoning) {
-                    appendMessage('bot', `<div style="margin-bottom: 12px;"><strong style="font-size: 1.15em; color: #C5A683; display: block; margin-bottom: 8px;">💡 선정 이유</strong></div>${data.reasoning}`, true);
+                    appendMessage('bot', `<div style="margin-bottom: 12px;"><strong style="font-size: 1.15em; color: #C5A683; display: block; margin-bottom: 8px;">💡 코스 설명</strong></div>${data.course_description}`, true);
                 }
                 
                 // 초기 빠른 질문 버튼 표시

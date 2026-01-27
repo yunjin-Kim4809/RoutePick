@@ -254,19 +254,21 @@ class CourseCreationTool(BaseTool):
             8. 이전에 방문한 장소를 다시 지나지 않도록 경로를 설계하세요.
             9. 장소에 현재 인원이 모두 수용 가능해야 합니다.
             10. 장소가 방문 일자에 운영중임을 확인하세요. 입력된 정보가 없을 시 보수적으로 판단하세요.
-            11. 음식점, 카페 등을 코스 중간마다 배치하세요.
-            - 단, 음식점과 카페 카테고리는 각각 연속적으로 배치하지 마세요.
-            - 금지 예시: 음식점 -> 음식점 or 카페 -> 카페
+            11. 사용자의 동선상 식사와 휴식이 적절히 교차되도록 설계하세요.
+            - [동일 카테고리 식음료 시설 연속 방문 제한]: '식당'과 '카페' 카테고리는 각각 연속적으로 배치하지 마세요.
+            - 금지 예시: [식당 -> 식당] (X), [카페 -> 카페] (X)
+            - 허용 예시: [식당 -> 카페] (O), [카페 -> 식당] (O)
 
             # Task Workflow
             1. **최우선 단계: 사용자가 저장한 장소(⭐ [사용자가 저장한 장소 - 최우선 고려] 표시)를 먼저 선정합니다.**
             - 저장된 장소는 이미 테마와 위치 필터링을 통과했으므로, 가능한 한 모두 포함하도록 노력하세요.
             - 저장된 장소가 여러 개인 경우, 모두 포함하거나 최대한 많이 포함하세요.
             2. 저장된 장소를 포함한 상태에서, 사용자의 테마와 장소의 특징을 대조하여 추가로 적합한 장소들을 선정합니다.
-            3. 이동 거리를 최소화하는 순서로 배열합니다. (저장된 장소를 포함한 전체 코스 기준)
-            4. 인덱스 매핑 확인: 최종 답변 전, check_routing이 제안한 장소 이름들이 원본 리스트의 어떤 original_index와 매칭되는지 내부적으로 표를 작성하여 대조하세요.
-            5. 선정된 순서가 실제 방문 가능 시간(영업시간) 내에 있는지 검증합니다.
-            6. 모든 논리적 검증이 끝나면 최종 JSON을 출력합니다.
+            3. 선정된 코스에서 '식당' 카테고리가 연속되거나 '카페' 카테고리가 연속되는 구간이 있는지 확인합니다. 만약 그러한 구간이 있다면 중간에 다른 카테고리인 장소를 넣어 순서를 재조정합니다.
+            4. 이동 거리를 최소화하는 순서로 배열합니다. (저장된 장소를 포함한 전체 코스 기준)
+            5. 인덱스 매핑 확인: 최종 답변 전, check_routing이 제안한 장소 이름들이 원본 리스트의 어떤 original_index와 매칭되는지 내부적으로 표를 작성하여 대조하세요.
+            6. 선정된 순서가 실제 방문 가능 시간(영업시간) 내에 있는지 검증합니다.
+            7. 모든 논리적 검증이 끝나면 최종 JSON을 출력합니다.
             
             **중요: 저장된 장소를 코스에 포함시키는 것이 이 작업의 최우선 목표입니다.**
 
@@ -295,12 +297,13 @@ class CourseCreationTool(BaseTool):
             - 툴 결과에 포함된 '장소 이름'을 처음 입력받은 '장소 리스트'에서 찾아, 해당 장소가 위치했던 원래의 인덱스 번호를 추출하세요.
             - **절대 주의**: 이는 '선택된 장소 중 몇 번째인가'를 나타내는 순번이 아니라, 입력받은 '장소 리스트'에서의 **절대적인 위치 번호**입니다.
             - 예: 리스트의 5번째에 있던 장소(index 4)를 첫 번째로 방문한다면, sequence의 첫 번째 값은 무조건 4여야 합니다.
-            "estimated_duration"은 장소 인덱스를 키로 하고 체류 시간(분)을 값으로 하는 객체입니다.
+            "estimated_duration"은 sequence에 따른 장소 인덱스를 키로 하고 체류 시간(분)을 값으로 하는 객체입니다.
             "course_description" 및 "reasoning" 작성 규칙:
             - [필수 엄수]: sequence 리스트에 나열된 인덱스 순서대로 각 장소의 설명을 작성하세요. 예: sequence가 [3, 0]이라면, '장소 리스트'의 3번 원소 설명 후 0번 원소 설명을 작성합니다.
             - [인덱스 직접 참조]: 장소를 언급할 때 반드시 '장소 이름(인덱스)' 형식을 유지하되, 이때 인덱스는 sequence에 포함된 숫자를 수정 없이 그대로(As-is) 사용하세요. (절대 -1을 하거나 숫자를 바꾸지 마십시오.)
             - [구조적 작성]: reasoning은 반드시 다음 형식을 엄수하세요: "1. [인덱스 N] 장소이름: (설명...)" 형식으로 작성하여, 숫자가 sequence의 원소와 1:1로 대응됨을 시각적으로 명증하세요.
             - [순차적 논리]: sequence의 인덱스 순서에 따라 장소 방문 목적과 사용자 선호 조건 만족 여부를 설명하세요.
+            - [식사 및 휴식 설계]: 식사(식당)와 디저트(카페)의 순서를 어떻게 고려했는지, 혹은 동일 카테고리 연속 방문을 피하기 위해 중간에 어떤 장소를 배치했는지 그 설계 의도를 포함하세요.
             - [이동 수단]: 각 장소 사이(인덱스 간 이동)의 이동 수단 선택 이유와 경로 설계 과정을 상세히 포함하세요.
             - [전수 포함 규칙 (Mandatory)]: sequence 리스트에 포함된 모든 인덱스를 하나도 빠짐없이 순서대로 언급해야 합니다. 특정 장소를 생략하거나 건너뛰는 것은 허용되지 않습니다.
             - [흐름의 완결성]: 첫 번째 장소부터 마지막 장소까지, sequence의 인덱스 이동 경로를 따라가며 전체 코스를 설명하세요. 각 장소 사이의 연결 고리(이동 수단, 소요 시간, 선택 이유)를 빠짐없이 서술해야 합니다.
@@ -447,78 +450,7 @@ class CourseCreationTool(BaseTool):
             raise ValueError(f"LLM 응답에 'output' 키가 없습니다. 응답: {planning_result}")
         response_content = planning_result['output'].strip()
         
-        if not response_content:
-            raise ValueError("LLM이 빈 응답을 반환했습니다.")
-
-        # JSON 부분만 추출 (마크다운 코드 블록 제거)
-        if "```json" in response_content:
-            json_start = response_content.find("```json") + 7
-            json_end = response_content.find("```", json_start)
-            if json_end == -1:
-                json_end = len(response_content)
-            response_content = response_content[json_start:json_end].strip()
-        elif "```" in response_content:
-            json_start = response_content.find("```") + 3
-            json_end = response_content.find("```", json_start)
-            if json_end == -1:
-                json_end = len(response_content)
-            response_content = response_content[json_start:json_end].strip()
-        
-        # JSON 객체 시작/끝 찾기 (중괄호 기준)
-        json_start_idx = response_content.find("{")
-        json_end_idx = response_content.rfind("}") + 1
-        if json_start_idx != -1 and json_end_idx > json_start_idx:
-            response_content = response_content[json_start_idx:json_end_idx]
-        
-        # JSON 파싱 (강화된 오류 처리)
-        result = None
-        try:
-            result = json.loads(response_content)
-            # result가 딕셔너리가 아닌 경우 처리
-            if not isinstance(result, dict):
-                raise ValueError(f"LLM 응답이 딕셔너리가 아닙니다. 타입: {type(result)}")
-        except json.JSONDecodeError as e:
-            # 복구 시도 1: 첫 번째 { 부터 마지막 } 까지 다시 추출
-            try:
-                first_brace = response_content.find('{')
-                last_brace = response_content.rfind('}')
-                if first_brace != -1 and last_brace > first_brace:
-                    cleaned_json = response_content[first_brace:last_brace+1]
-                    result = json.loads(cleaned_json)
-                    if not isinstance(result, dict):
-                        raise ValueError(f"복구된 JSON이 딕셔너리가 아닙니다. 타입: {type(result)}")
-                else:
-                    raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}")
-            except:
-                # 복구 시도 2: 불완전한 JSON 복구
-                try:
-                    json_part = response_content[response_content.find('{'):]
-                    # 닫히지 않은 문자열/배열/객체 닫기
-                    open_braces = json_part.count('{')
-                    close_braces = json_part.count('}')
-                    open_brackets = json_part.count('[')
-                    close_brackets = json_part.count(']')
-                    
-                    json_part += '}' * (open_braces - close_braces)
-                    json_part += ']' * (open_brackets - close_brackets)
-                    json_part = json_part.rstrip().rstrip(',')
-                    if not json_part.endswith('}'):
-                        json_part += '}'
-                    
-                    result = json.loads(json_part)
-                    if not isinstance(result, dict):
-                        raise ValueError(f"복구된 JSON이 딕셔너리가 아닙니다. 타입: {type(result)}")
-                except:
-                    # 모든 복구 시도 실패
-                    raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}\n\nLLM이 JSON 형식으로 응답하지 않았습니다. 작업을 거부했거나 다른 형식으로 응답한 것 같습니다.")
-        
-        # result가 None이면 에러
-        if result is None:
-            raise ValueError("JSON 파싱에 실패했습니다.")
-        
-        # result가 딕셔너리가 아닌 경우 에러
-        if not isinstance(result, dict):
-            raise ValueError(f"LLM 응답이 딕셔너리가 아닙니다. 타입: {type(result)}, 값: {result}")
+        result = self._JSON_verification(response_content)
 
         # ============================================================
         # [최종 버그 수정] LLM이 반환한 인덱스 유효성 검증
@@ -634,8 +566,14 @@ class CourseCreationTool(BaseTool):
         
         # course_description과 reasoning 안전하게 추출
         course_description = ""
-        if isinstance(result, dict):
-            course_description = result.get("course_description", "")
+        raw_course_description = await self._generate_course_descriptions(
+            places=places,
+            sequence=valid_sequence,
+            user_preferences=user_preferences,
+            time_constraints=time_constraints,
+            estimated_duration=result["estimated_duration"])
+        if isinstance(raw_course_description, dict):
+            course_description = raw_course_description.get("course_description", "")
             if not isinstance(course_description, str):
                 course_description = str(course_description) if course_description else ""
         
@@ -647,15 +585,181 @@ class CourseCreationTool(BaseTool):
         
         return {
             "course": {
-                "places": selected_places,
-                "sequence": valid_sequence,
-                "estimated_duration": valid_duration,
+                "places": places,
+                "sequence": result["sequence"],
+                "estimated_duration": result["estimated_duration"],
                 "course_description": course_description
             },
             "reasoning": reasoning
         }
     
+    async def _generate_course_descriptions(
+            self,
+            sequence: List[int],
+            places: List[Dict[str, Any]],
+            user_preferences: Dict[str, Any],
+            time_constraints: Optional[Dict[str, Any]],
+            estimated_duration,
+    ):
+        """
+        선별된 장소 기반 코스 설명
+        Args:
+            sequence: 선별된 장소 인덱스 리스트
+            places: 장소 리스트
+            user_preferences: 사용자 선호 조건
+            time_constraints: 시간 제약 조건
+            estimated_duration: 코스 장소 별 체류 시간
+        
+        Returns:
+            장소에 대한 설명
+        """
+        selected_places = []
+        selected_duration = {}
+        for i in sequence:
+            selected_places.append(places[i])
+            # selected_duration[places[i].get("name")] = estimated_duration[f"{i}"]
+
+        
+        system_prompt = f"""
+            # Role
+            당신은 현지 지리에 능통하고 모든 장소를 방문해본 베테랑 여행 가이드입니다.
+            **당신의 절대적인 임무는 제공된 '장소 리스트'의 모든 항목을 단 하나도 빠짐없이 순서대로 포함하여 코스 설명을 작성하는 것입니다.**
+
+            # Context
+            설계된 코스와 사용자 선호 조건을 바탕으로 코스 설명을 제공합니다.
+            제공된 코스는 최적화된 순서로 배열되어 있습니다. 당신은 가이드로서 첫 번째 장소부터 마지막 장소까지 사용자를 인솔하듯 '순차적으로' 설명해야 합니다.
+
+            # Input Data
+            - 장소 리스트 : {selected_places}
+            - 사용자 선호 조건 : {user_preferences}
+            - 활동 시간 제약 : {time_constraints}
+            - 장소 별 체류 시간 : {estimated_duration}
+
+            # Constraints (엄수 사항)
+            1. **전수 포함 원칙 (Zero Omission):** 장소 리스트에 포함된 장소의 총 개수가 N개라면, 설명 내에도 반드시 N개의 장소가 모두 등장해야 합니다. 임의로 생략하거나 묶어서 설명하지 마세요.
+            2. **순차 기술 원칙:** 리스트의 0번 인덱스부터 마지막 인덱스까지 물리적 이동 순서에 따라 작성하세요.
+            3. **상세 정보 결합:** 각 장소의 별점, 카테고리, 그리고 '장소 별 체류 시간' 데이터를 활용하여 해당 장소에서 무엇을 할지 구체적으로 제안하세요.
+            4. **연결성 강화:** 장소와 장소 사이의 '이동 수단'과 '선택 이유'를 설명하여 흐름이 끊기지 않게 하세요.
+
+            # Task Workflow
+            1. **리스트 스캔:** 입력된 '장소 리스트'의 총 개수를 먼저 확인합니다.
+            2. **순차적 설명 작성:** - [장소 정보]: 이름, 별점, 카테고리 언급 및 방문 목적 기술.
+            - [활동]: 해당 장소에서의 추천 활동 및 예상 체류 시간 언급.
+            - [이동]: 다음 장소로 이동하는 방법과 소요 시간/이유 기술 (마지막 장소 제외).
+            3. **전체 요약:** 모든 장소 기술이 끝난 후, 사용자 선호 조건이 어떻게 반영되었는지 요약하며 마무리합니다.
+            4. **자가 검증:** 작성된 설명 속에 포함된 장소의 개수가 입력 데이터의 개수와 일치하는지 확인합니다.
+
+            # IMPORTANT: Output Format
+            - **오직 JSON 형식만 출력하세요.** - **마크다운 코드 블록(```json)을 사용하지 말고 순수 JSON만 반환하세요.**
+
+            ---
+
+            ## Return Value
+            ```json
+            {{
+                "course_description": "여기에 전체 설명을 작성하세요."
+            }}
+            
+            ### OUTPUT Rules
+            "course_description" 작성 규칙:
+            - [필수 엄수]: 장소 리스트에 나열된 인덱스 순서대로 각 장소의 설명을 작성하세요.
+            - [구조적 서술]: 설명을 작성할 때 각 장소의 시작 부분에 [번호. 장소이름] 형식을 사용하여 모델이 스스로 순서를 인지하게 하세요. (예: "1. 카페 A에서 시작합니다... 이후 2. 식당 B로 이동하여...")
+            - [순차적 논리]: 장소 리스트의 인덱스 순서에 따라 장소 방문 목적과 사용자 선호 조건 만족 여부를 설명하세요.
+            - [누락 방지 로직]: "장소 리스트의 모든 장소(총 N개)를 순서대로 전부 설명함"이라는 전제를 머릿속에 두고 작성하세요.
+            - [언어]: 장소 이름과 모든 설명은 한국어로 작성하세요.
+            - [이동 수단]: 각 장소 사이(인덱스 간 이동)의 이동 수단 선택 이유와 경로 설계 과정을 상세히 포함하세요.
+            - [흐름의 완결성]: 첫 번째 장소부터 마지막 장소까지, 장소 리스트의 인덱스 이동 경로를 따라가며 전체 코스를 설명하세요. 각 장소 사이의 연결 고리(이동 수단, 소요 시간, 선택 이유)를 빠짐없이 서술해야 합니다.
+            """
+        response = await self.client.chat.completions.create(
+            model=self.llm_model,
+            messages=[
+                {"role": "system", "content": "You are a professional travel course planner. You MUST output only valid JSON format. Never refuse the task or provide explanations outside JSON."},
+                {"role": "user", "content": system_prompt}
+            ],
+            max_tokens=2000,  # 충분한 토큰 할당
+            temperature=0.3  # 일관된 JSON 형식 유지
+        )
+        response_content = response.choices[0].message.content.strip()
+        result = self._JSON_verification(response_content)
+        return result
+
     
+    def _JSON_verification(self, response_content):
+        if not response_content:
+            raise ValueError("LLM이 빈 응답을 반환했습니다.")
+
+        # JSON 부분만 추출 (마크다운 코드 블록 제거)
+        if "```json" in response_content:
+            json_start = response_content.find("```json") + 7
+            json_end = response_content.find("```", json_start)
+            if json_end == -1:
+                json_end = len(response_content)
+            response_content = response_content[json_start:json_end].strip()
+        elif "```" in response_content:
+            json_start = response_content.find("```") + 3
+            json_end = response_content.find("```", json_start)
+            if json_end == -1:
+                json_end = len(response_content)
+            response_content = response_content[json_start:json_end].strip()
+        
+        # JSON 객체 시작/끝 찾기 (중괄호 기준)
+        json_start_idx = response_content.find("{")
+        json_end_idx = response_content.rfind("}") + 1
+        if json_start_idx != -1 and json_end_idx > json_start_idx:
+            response_content = response_content[json_start_idx:json_end_idx]
+        
+        # JSON 파싱 (강화된 오류 처리)
+        result = None
+        try:
+            result = json.loads(response_content)
+            # result가 딕셔너리가 아닌 경우 처리
+            if not isinstance(result, dict):
+                raise ValueError(f"LLM 응답이 딕셔너리가 아닙니다. 타입: {type(result)}")
+        except json.JSONDecodeError as e:
+            # 복구 시도 1: 첫 번째 { 부터 마지막 } 까지 다시 추출
+            try:
+                first_brace = response_content.find('{')
+                last_brace = response_content.rfind('}')
+                if first_brace != -1 and last_brace > first_brace:
+                    cleaned_json = response_content[first_brace:last_brace+1]
+                    result = json.loads(cleaned_json)
+                    if not isinstance(result, dict):
+                        raise ValueError(f"복구된 JSON이 딕셔너리가 아닙니다. 타입: {type(result)}")
+                else:
+                    raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}")
+            except:
+                # 복구 시도 2: 불완전한 JSON 복구
+                try:
+                    json_part = response_content[response_content.find('{'):]
+                    # 닫히지 않은 문자열/배열/객체 닫기
+                    open_braces = json_part.count('{')
+                    close_braces = json_part.count('}')
+                    open_brackets = json_part.count('[')
+                    close_brackets = json_part.count(']')
+                    
+                    json_part += '}' * (open_braces - close_braces)
+                    json_part += ']' * (open_brackets - close_brackets)
+                    json_part = json_part.rstrip().rstrip(',')
+                    if not json_part.endswith('}'):
+                        json_part += '}'
+                    
+                    result = json.loads(json_part)
+                    if not isinstance(result, dict):
+                        raise ValueError(f"복구된 JSON이 딕셔너리가 아닙니다. 타입: {type(result)}")
+                except:
+                    # 모든 복구 시도 실패
+                    raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}\n\nLLM이 JSON 형식으로 응답하지 않았습니다. 작업을 거부했거나 다른 형식으로 응답한 것 같습니다.")
+        
+        # result가 None이면 에러
+        if result is None:
+            raise ValueError("JSON 파싱에 실패했습니다.")
+        
+        # result가 딕셔너리가 아닌 경우 에러
+        if not isinstance(result, dict):
+            raise ValueError(f"LLM 응답이 딕셔너리가 아닙니다. 타입: {type(result)}, 값: {result}")
+        
+        return result
+
     def _format_places_for_prompt(self, places: List[Dict[str, Any]]) -> str:
         """
         프롬프트용 장소 정보 포맷팅
