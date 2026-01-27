@@ -74,7 +74,7 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
         const firstWeatherKey = Object.keys(data.weather_info)[0];
         const weather = data.weather_info[firstWeatherKey];
         if (weather && weather.temperature !== null && weather.temperature !== undefined) {
-            displayWeatherOnMap(weather);
+            displayWeatherOnMap(weather, data.visit_date);
         }
     }
     
@@ -145,14 +145,18 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
     const validCoords = results.filter(c => c !== null);
     const validPlaces = orderedPlaces.filter((place, idx) => results[idx] !== null);
 
-    // 실제 도로 경로 그리기 (Directions Service 사용)
+    // 경로 안내 버튼과 동일한 경로로 초기 표시
     if (validCoords.length > 1) {
-        await drawActualRoute(validCoords, validPlaces, data);
-        
-        // 화면 자동 맞춤
-        const bounds = new google.maps.LatLngBounds();
-        validCoords.forEach(c => bounds.extend(c));
-        map.fitBounds(bounds);
+        const routePaths = await fetchRouteGuidePaths(taskId);
+        if (routePaths && routePaths.length > 0) {
+            drawRouteFromServerData(routePaths);
+        } else {
+            // 폴백: 서버 경로가 없으면 기존 방식 사용
+            await drawActualRoute(validCoords, validPlaces, data);
+            const bounds = new google.maps.LatLngBounds();
+            validCoords.forEach(c => bounds.extend(c));
+            map.fitBounds(bounds);
+        }
     }
     
     // 전역 변수 업데이트
@@ -164,7 +168,7 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
         const firstWeatherKey = Object.keys(data.weather_info)[0];
         const weather = data.weather_info[firstWeatherKey];
         if (weather && weather.temperature !== null && weather.temperature !== undefined) {
-            displayWeatherOnMap(weather);
+            displayWeatherOnMap(weather, data.visit_date);
         }
     }
 };
@@ -173,7 +177,7 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
 const TRANSPORT_COLORS = {
     'WALKING': '#4285F4',      // 파란색 - 도보
     'DRIVING': '#9C27B0',      // 보라색 - 자동차
-    'BICYCLING': '#FFC107',    // 노란색 - 자전거
+    // 자전거는 완전히 제외됨
     'TRANSIT_BUS': '#4CAF50',  // 초록색 - 버스
     'TRANSIT_SUBWAY': '#F44336', // 빨간색 - 지하철
     'TRANSIT': '#FF9800',      // 주황색 - 기타 대중교통
@@ -197,11 +201,6 @@ function getTransportStyle(travelMode, transitDetails) {
         strokeWeight = 6;
         strokeOpacity = 0.8;
         zIndex = 2;
-    } else if (travelMode === 'BICYCLING') {
-        color = TRANSPORT_COLORS.BICYCLING;
-        strokeWeight = 4;
-        strokeOpacity = 0.7;
-        zIndex = 1;
     } else if (travelMode === 'TRANSIT') {
         // 대중교통인 경우 세부 정보 확인
         if (transitDetails) {
@@ -269,17 +268,13 @@ window.drawActualRoute = async function(coords, places, courseData) {
         const transportation = courseData.transportation || '도보';
         let travelMode = google.maps.TravelMode.WALKING;
         
-        // 우선순위: 지하철/버스 > 자동차 > 도보 > 자전거
-        // 자전거는 사용자가 명시적으로 선택한 경우에만 사용
+        // 우선순위: 지하철/버스 > 자동차 > 도보 (자전거 제외)
         if (transportation.includes('버스') || transportation.includes('지하철')) {
             travelMode = google.maps.TravelMode.TRANSIT;
         } else if (transportation.includes('자동차')) {
             travelMode = google.maps.TravelMode.DRIVING;
-        } else if (transportation.includes('자전거')) {
-            // 자전거는 사용자가 명시적으로 선택한 경우에만 사용
-            travelMode = google.maps.TravelMode.BICYCLING;
         } else {
-            // 기본값은 도보
+            // 기본값은 도보 (자전거는 완전히 제외)
             travelMode = google.maps.TravelMode.WALKING;
         }
 
@@ -383,11 +378,14 @@ window.drawActualRoute = async function(coords, places, courseData) {
 
 // 서버에서 받은 경로 좌표 정보로 지도에 경로 그리기
 function drawRouteFromServerData(routePaths) {
-    console.log('drawRouteFromServerData 호출:', {
-        hasMap: !!window.map,
-        routePathsLength: routePaths ? routePaths.length : 0,
-        routePaths: routePaths
-    });
+    // 경로 정보 출력 (요약 + 전체 데이터)
+    const totalSegments = routePaths ? routePaths.length : 0;
+    const totalSteps = routePaths ? routePaths.reduce((sum, seg) => sum + (seg ? seg.length : 0), 0) : 0;
+    const totalCoords = routePaths ? routePaths.reduce((sum, seg) => {
+        return sum + (seg ? seg.reduce((s, step) => s + (step.path ? step.path.length : 0), 0) : 0);
+    }, 0) : 0;
+    console.log(`drawRouteFromServerData 호출: 지도=${!!window.map}, ${totalSegments}개 구간, ${totalSteps}개 step, 총 ${totalCoords}개 좌표`);
+    console.log('routePaths:', routePaths);
     
     if (!window.map) {
         console.error('지도가 초기화되지 않았습니다.');
@@ -485,8 +483,30 @@ function drawRouteFromServerData(routePaths) {
     }
 }
 
+// 서버 경로 안내 API에서 경로 좌표만 가져오기
+async function fetchRouteGuidePaths(taskId) {
+    if (!taskId) return null;
+    try {
+        const response = await fetch(`/api/route-guide/${taskId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        if (!response.ok) {
+            console.warn('경로 안내 API 응답 실패:', response.status);
+            return null;
+        }
+        const data = await response.json();
+        return data.route_paths || null;
+    } catch (error) {
+        console.warn('경로 안내 API 호출 실패:', error);
+        return null;
+    }
+}
+
 // 지도 왼쪽 위에 날씨 정보 표시 함수
-function displayWeatherOnMap(weather) {
+function displayWeatherOnMap(weather, visitDate) {
     // 기존 날씨 정보 제거
     const existingWeather = document.getElementById('weather-widget');
     if (existingWeather) {
@@ -531,6 +551,7 @@ function displayWeatherOnMap(weather) {
         ? `${Math.round(weather.temperature)}°C` 
         : '';
     const condition = weather.condition || weather.description || '';
+    const dateLabel = weather.date || visitDate || '';
     
     weatherWidget.innerHTML = `
         <div style="display: flex; align-items: center; gap: 10px; flex: 1;">
@@ -544,6 +565,7 @@ function displayWeatherOnMap(weather) {
                 <div style="font-size: 12px; color: #666; line-height: 1.2;">
                     ${condition}
                 </div>
+                ${dateLabel ? `<div style="font-size: 11px; color: #888; line-height: 1.2;">${dateLabel}</div>` : ''}
             </div>
         </div>
     `;
@@ -597,13 +619,9 @@ function addRouteLegend() {
             <div style="width: 20px; height: 4px; background: ${TRANSPORT_COLORS.TRANSIT_BUS}; margin-right: 8px; border-radius: 2px;"></div>
             <span>버스</span>
         </div>
-        <div style="display: flex; align-items: center; margin-bottom: 4px;">
+        <div style="display: flex; align-items: center;">
             <div style="width: 20px; height: 4px; background: ${TRANSPORT_COLORS.DRIVING}; margin-right: 8px; border-radius: 2px;"></div>
             <span>자동차</span>
-        </div>
-        <div style="display: flex; align-items: center;">
-            <div style="width: 20px; height: 4px; background: ${TRANSPORT_COLORS.BICYCLING}; margin-right: 8px; border-radius: 2px;"></div>
-            <span>자전거</span>
         </div>
     `;
     
@@ -795,7 +813,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // 서버에서 받은 경로 좌표 정보로 지도에 경로 그리기
                 if (data.route_paths && window.map) {
-                    console.log('경로 좌표 정보 수신:', data.route_paths);
+                    // 경로 좌표 정보 출력 (요약 + 전체 데이터)
+                    const totalSegments = data.route_paths ? data.route_paths.length : 0;
+                    const totalSteps = data.route_paths ? data.route_paths.reduce((sum, seg) => sum + (seg ? seg.length : 0), 0) : 0;
+                    const totalCoords = data.route_paths ? data.route_paths.reduce((sum, seg) => {
+                        return sum + (seg ? seg.reduce((s, step) => s + (step.path ? step.path.length : 0), 0) : 0);
+                    }, 0) : 0;
+                    console.log(`경로 좌표 정보 수신: ${totalSegments}개 구간, ${totalSteps}개 step, 총 ${totalCoords}개 좌표`);
+                    console.log('경로 좌표 정보:', data.route_paths);
                     
                     // window.polylines 초기화 (없으면 생성)
                     if (!window.polylines) {

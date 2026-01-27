@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 import openai
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -27,7 +28,7 @@ async def check_routing(
         places: List[Dict[str, Any]],  # 필수 파라미터로 명시 (기본값 제거)
         origin: Optional[Dict[str, Any]] = None,
         destination: Optional[Dict[str, Any]] = None,
-        mode: str = "transit",  # 'driving', 'walking', 'transit', 'bicycling'
+        mode: str = "transit",  # 'driving', 'walking', 'transit' (자전거 제외)
     ) -> Dict[str, Any]:
     """
     주어진 장소들에 대해 경로 최적화를 실행합니다.
@@ -39,7 +40,7 @@ async def check_routing(
                각 장소는 반드시 coordinates 필드를 포함해야 합니다: {{"lat": 위도, "lng": 경도}}
         origin: 출발지 (선택사항, 없으면 places의 첫 번째 항목)
         destination: 도착지 (선택사항, 없으면 places의 마지막 항목)
-        mode: 이동 수단 ('driving', 'walking', 'transit', 'bicycling')
+        mode: 이동 수단 ('driving', 'walking', 'transit') (자전거 제외)
     
     Returns:
         경로 최적화 결과 딕셔너리
@@ -55,12 +56,34 @@ async def check_routing(
             "error": "places 파라미터가 필수입니다."
         }
 
-    return await maptool.execute(
+    # LLM 입력 컨텍스트 절약을 위해 결과를 경량화해서 반환
+    result = await maptool.execute(
         places=places,
         origin=origin,
         destination=destination,
         mode=mode
     )
+    
+    # directions에서 step/path/raw 데이터 제거, 핵심 요약만 반환
+    slim_directions = []
+    for d in result.get("directions", [])[:10]:  # 최대 10구간만
+        slim_directions.append({
+            "from": d.get("from"),
+            "to": d.get("to"),
+            "duration_text": d.get("duration_text"),
+            "distance_text": d.get("distance_text"),
+            "mode": d.get("mode"),
+            "error": d.get("error")
+        })
+    
+    return {
+        "success": result.get("success", False),
+        "total_duration": result.get("total_duration", 0),
+        "total_distance": result.get("total_distance", 0),
+        "directions": slim_directions,
+        "mode": mode,
+        "error": result.get("error")
+    }
 
 class CourseCreationTool(BaseTool):
     """LLM을 사용한 맞춤형 코스 제작 Tool"""
@@ -93,6 +116,32 @@ class CourseCreationTool(BaseTool):
         # 예: OpenAI, Anthropic, 등
         # self.client = OpenAI(api_key=self.api_key)
         self.tools = [check_routing]
+        
+        # 경고 로그 출력 여부 (기본: 경고 표시)
+        self.suppress_llm_warnings = self._resolve_warning_suppression()
+    
+    def _resolve_warning_suppression(self) -> bool:
+        """LLM 경고 로그 출력 여부 결정"""
+        # config가 있으면 우선 적용
+        if isinstance(self.config, dict) and "suppress_llm_warnings" in self.config:
+            return bool(self.config.get("suppress_llm_warnings"))
+        
+        # 환경 변수로 제어
+        env_value = os.getenv("SUPPRESS_LLM_WARNINGS")
+        if env_value is not None:
+            env_value = env_value.strip().lower()
+            if env_value in ("1", "true", "yes", "on"):
+                return True
+            if env_value in ("0", "false", "no", "off"):
+                return False
+        
+        # 기본값: 경고 표시
+        return False
+    
+    def _log_llm_warning(self, message: str):
+        """LLM 경고 로그 출력 (필요 시에만)"""
+        if not self.suppress_llm_warnings:
+            print(message)
     
     async def execute(
         self,
@@ -113,7 +162,7 @@ class CourseCreationTool(BaseTool):
             코스 생성 결과
         """
         # 장소 개수 사전 제한 (컨텍스트 길이 초과 방지) - 더 엄격하게 제한
-        MAX_PLACES = 30  # 50 -> 30으로 감소
+        MAX_PLACES = 20  # 30 -> 20으로 감소 (토큰 길이 초과 방지)
         if len(places) > MAX_PLACES:
             print(f"⚠️ 장소가 {len(places)}개로 너무 많아 {MAX_PLACES}개로 제한합니다.")
             # 저장된 장소는 우선 보존
@@ -300,97 +349,48 @@ class CourseCreationTool(BaseTool):
             place['original_index'] = i
         
         system_instruction = """
-            # Role
-            당신은 현지 지리에 능통하고 모든 장소를 방문해본 여행 가이드입니다. 당신은 효율적인 경로 설계에 능통합니다.
-            **당신의 임무는 제공된 장소 리스트에서 최적의 코스를 선택하고 JSON 형식으로 반환하는 것입니다.**
+# Role
+여행 가이드. 제공된 장소 리스트에서 최적의 코스를 선택하고 JSON으로 반환.
 
-            # Context
-            사용자의 선호 조건과 제공된 장소 데이터를 바탕으로 최적의 여행 코스를 설계합니다.
-            제공된 장소 정보를 바탕으로 작업을 수행하세요. 현재 정보가 부족하더라도 제공된 정보만으로 최선의 코스를 설계하세요.
+# Input
+- 장소 리스트: {places} (형식: [인덱스]이름|카테고리|⭐|좌표|평점)
+- 허용 인덱스 목록: {allowed_indices}
+- 사용자 선호: {user_preferences}
+- 시간 제약: {time_constraints}
+**중요**: 각 장소의 original_index를 기준으로 인덱스 참조.
 
-            # Input Data
-            - 장소 리스트 : {places}
-            - 사용자 선호 조건 : {user_preferences}
-            - 활동 시간 제약 : {time_constraints}
-            **중요사항** : 각 장소에는 original_index 필드가 포함되어 있습니다. 모든 인덱스 참조(sequence, reasoning 등)는 반드시 이 필드 값을 기준으로 작성하십시오.
+# Constraints
+1. 저장된 장소(⭐ 표시) 최우선 포함
+2. check_routing tool로 거리/시간 계산 (coordinates 필수: {{"lat":숫자,"lng":숫자}})
+3. 좌표 기반으로 가까운 장소 우선 그룹화
+4. 이동 시간 30분 이내
+5. 도보 우선 (차이 20분 이내면 도보)
+6. 식당/카페 연속 방문 금지
 
-            # Constraints
-            1. **최우선 규칙: 사용자가 저장한 장소(⭐ [사용자가 저장한 장소 - 최우선 고려] 표시가 있는 장소)는 반드시 최우선적으로 고려해야 합니다.**
-            - 저장된 장소는 이미 테마와 위치 필터링을 통과했으므로, 사용자의 의도에 부합하는 장소입니다.
-            - 저장된 장소가 사용자의 테마와 위치 조건에 부합한다면, 반드시 코스에 포함시켜야 합니다.
-            - 저장된 장소를 포함하는 것이 다른 제약 조건(거리, 시간 등)과 충돌하더라도, 가능한 한 포함하도록 노력하세요.
-            2. 장소 간의 실제 거리 및 이동 시간을 계산할 때는 항상 'check_routing' tool을 사용하세요.
-            - `check_routing`의 `places` 파라미터에는 입력 데이터로 제공된 '장소 리스트'의 객체들을 전달하되, 각 장소의 위치 정보는 반드시 `{{"coordinates": {{"lat": 위도숫자, "lng": 경도숫자}}}}` 형식을 포함해야 합니다.
-            - 입력 데이터에 'latitude', 'longitude'로 되어 있더라도 도구 호출 시에는 반드시 'lat', 'lng' 키를 사용하세요.
-            3. 제공된 [위치 좌표(위도, 경도)] 데이터를 기반으로 장소 간의 실제 물리적 거리를 계산하여 코스를 짜야 합니다.
-            4. 당신의 배경지식보다 입력된 좌표 정보가 서로 가까운 장소들을 우선적으로 그룹화하세요.
-            5. 추천 신뢰도(Trust Score)가 높은 장소를 우선적으로 고려하되, 지리적 동선 효율성을 해치지 않는 범위 내에서 선택하세요.
-            6. 각 코스 간 이동 거리는 30분 이내여야 합니다. (좌표 데이터를 참고하여 보수적으로 판단)
-            7. 도보 외의 교통 수단의 사용 빈도를 최소화하세요. 단, 환승은 사용 빈도 계산에서 제외하세요. 도보와 교통 수단의 이동 시간 차이가 20분 이내이면 도보를 선택하세요.
-            8. 이전에 방문한 장소를 다시 지나지 않도록 경로를 설계하세요.
-            9. 장소에 현재 인원이 모두 수용 가능해야 합니다.
-            10. 장소가 방문 일자에 운영중임을 확인하세요. 입력된 정보가 없을 시 보수적으로 판단하세요.
-            11. 사용자의 동선상 식사와 휴식이 적절히 교차되도록 설계하세요.
-            - [동일 카테고리 식음료 시설 연속 방문 제한]: '식당'과 '카페' 카테고리는 각각 연속적으로 배치하지 마세요.
-            - 금지 예시: [식당 -> 식당] (X), [카페 -> 카페] (X)
-            - 허용 예시: [식당 -> 카페] (O), [카페 -> 식당] (O)
+# Workflow
+1. 저장된 장소(⭐) 선정
+2. 테마에 맞는 추가 장소 선정
+3. 식당/카페 연속 방문 체크 및 재배치
+4. 거리 최소화 순서로 배열
+5. check_routing으로 경로 검증
+6. JSON 출력
 
-            # Task Workflow
-            1. **최우선 단계: 사용자가 저장한 장소(⭐ [사용자가 저장한 장소 - 최우선 고려] 표시)를 먼저 선정합니다.**
-            - 저장된 장소는 이미 테마와 위치 필터링을 통과했으므로, 가능한 한 모두 포함하도록 노력하세요.
-            - 저장된 장소가 여러 개인 경우, 모두 포함하거나 최대한 많이 포함하세요.
-            2. 저장된 장소를 포함한 상태에서, 사용자의 테마와 장소의 특징을 대조하여 추가로 적합한 장소들을 선정합니다.
-            3. 선정된 코스에서 '식당' 카테고리가 연속되거나 '카페' 카테고리가 연속되는 구간이 있는지 확인합니다. 만약 그러한 구간이 있다면 중간에 다른 카테고리인 장소를 넣어 순서를 재조정합니다.
-            4. 이동 거리를 최소화하는 순서로 배열합니다. (저장된 장소를 포함한 전체 코스 기준)
-            5. 인덱스 매핑 확인: 최종 답변 전, check_routing이 제안한 장소 이름들이 원본 리스트의 어떤 original_index와 매칭되는지 내부적으로 표를 작성하여 대조하세요.
-            6. 선정된 순서가 실제 방문 가능 시간(영업시간) 내에 있는지 검증합니다.
-            7. 모든 논리적 검증이 끝나면 최종 JSON을 출력합니다.
-            
-            **중요: 저장된 장소를 코스에 포함시키는 것이 이 작업의 최우선 목표입니다.**
+# Output (JSON만)
+{{
+  "selected_places": [장소 리스트],
+  "sequence": [선택된 장소 내 순서 인덱스],
+  "estimated_duration": {{"선택된 장소 인덱스": 분}},
+  "course_description": "코스 설명",
+  "reasoning": "선정 이유"
+}}
 
-            # IMPORTANT: Output Format
-            **당신은 반드시 이 작업을 수행해야 합니다. 작업을 거부하거나 설명을 제공하지 마세요.**
-            **오직 JSON 형식만 출력하세요. 다른 텍스트, 설명, 마크다운 헤더는 절대 포함하지 마세요.**
-
-            ---
-
-            ## Return Value
-            코스 설계 완료 후, **반드시 다음의 JSON 형식만** 출력하세요. (LangChain Agent의 Final Answer로 이 형식을 사용하세요)
-
-            ```json
-            {{
-                "selected_places": [장소 리스트]
-                "sequence": [방문 순서],
-                "estimated_duration": {{장소별 체류 시간 (분)}},
-                "course_description": "코스 설명",
-                "reasoning": "선정 이유"
-            }}
-            
-            ### OUTPUT Rules
-            "selected_places"는 '장소 리스트'를 그대로 반환합니다.
-            "sequence"의 정의: 사용자가 최종적으로 방문하게 될 장소들의 원본 리스트(Original Input List)를 기준으로, 방문 순서대로 나열된 [original_index]의 리스트입니다. 최솟값은 0입니다.
-            - check_routing 툴이 반환한 결과의 순서가 인덱스가 아닙니다.
-            - 툴 결과에 포함된 '장소 이름'을 처음 입력받은 '장소 리스트'에서 찾아, 해당 장소가 위치했던 원래의 인덱스 번호를 추출하세요.
-            - **절대 주의**: 이는 '선택된 장소 중 몇 번째인가'를 나타내는 순번이 아니라, 입력받은 '장소 리스트'에서의 **절대적인 위치 번호**입니다.
-            - 예: 리스트의 5번째에 있던 장소(index 4)를 첫 번째로 방문한다면, sequence의 첫 번째 값은 무조건 4여야 합니다.
-            "estimated_duration"은 sequence에 따른 장소 인덱스를 키로 하고 체류 시간(분)을 값으로 하는 객체입니다.
-            "course_description" 및 "reasoning" 작성 규칙:
-            - [필수 엄수]: sequence 리스트에 나열된 인덱스 순서대로 각 장소의 설명을 작성하세요. 예: sequence가 [3, 0]이라면, '장소 리스트'의 3번 원소 설명 후 0번 원소 설명을 작성합니다.
-            - [인덱스 직접 참조]: 장소를 언급할 때 반드시 '장소 이름(인덱스)' 형식을 유지하되, 이때 인덱스는 sequence에 포함된 숫자를 수정 없이 그대로(As-is) 사용하세요. (절대 -1을 하거나 숫자를 바꾸지 마십시오.)
-            - [구조적 작성]: reasoning은 반드시 다음 형식을 엄수하세요: "1. [인덱스 N] 장소이름: (설명...)" 형식으로 작성하여, 숫자가 sequence의 원소와 1:1로 대응됨을 시각적으로 명증하세요.
-            - [순차적 논리]: sequence의 인덱스 순서에 따라 장소 방문 목적과 사용자 선호 조건 만족 여부를 설명하세요.
-            - [식사 및 휴식 설계]: 식사(식당)와 디저트(카페)의 순서를 어떻게 고려했는지, 혹은 동일 카테고리 연속 방문을 피하기 위해 중간에 어떤 장소를 배치했는지 그 설계 의도를 포함하세요.
-            - [이동 수단]: 각 장소 사이(인덱스 간 이동)의 이동 수단 선택 이유와 경로 설계 과정을 상세히 포함하세요.
-            - [전수 포함 규칙 (Mandatory)]: sequence 리스트에 포함된 모든 인덱스를 하나도 빠짐없이 순서대로 언급해야 합니다. 특정 장소를 생략하거나 건너뛰는 것은 허용되지 않습니다.
-            - [흐름의 완결성]: 첫 번째 장소부터 마지막 장소까지, sequence의 인덱스 이동 경로를 따라가며 전체 코스를 설명하세요. 각 장소 사이의 연결 고리(이동 수단, 소요 시간, 선택 이유)를 빠짐없이 서술해야 합니다.
-            - [최종 정합성 체크]: 모든 답변 작성을 마친 후, sequence 리스트의 총 개수($N$)와 course_description에 나열된 장소의 개수, 그리고 reasoning에서 번호 매겨진 항목의 개수가 모두 $N$으로 일치하는지 숫자를 직접 세어 확인하십시오. 하나라도 다르면 처음부터 다시 구성하십시오.
-            **주의 사항 (Critical)**:
-            - **[매핑 루프]**: 작성 시 반드시 "이 장소의 original_index가 무엇인가?"를 먼저 확인하고 쓰십시오.
-            - **[인덱스 고정]**: '장소이름(인덱스)' 표기 시, 괄호 안의 숫자는 오직 sequence 리스트에 포함된 해당 장소의 original_index여야 합니다.
-            - **[전수 검증]**: reasoning의 항목 개수가 sequence 리스트의 길이와 다를 경우, 이는 논리적 결함으로 간주되어 작업이 실패합니다.
-            - **[연산 금지]**: 어떤 경우에도 인덱스 번호에 +1, -1 등의 산술 연산을 적용하지 마십시오. 0-based index를 메모리 주소처럼 그대로 사용하십시오. sequence 내의 숫자 0은 '장소 리스트'의 가장 첫 번째 항목을 의미함을 명심하세요.
-            - "course_description", "reasoning"을 생성할 때, '장소 리스트' 장소들의 이름을 한국어로 작성하세요.
-            """
+# Rules
+- selected_places: 반드시 허용 인덱스 목록 안의 정수만 사용
+- sequence: selected_places 기준 0..N-1 인덱스 (예: selected_places가 3개면 sequence는 0~2만)
+- reasoning: "1. [original_index] 장소이름: 설명" 형식, 모든 인덱스 포함
+- JSON 마지막 쉼표 금지
+- 인덱스 연산 금지 (+1/-1 등)
+"""
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_instruction),
@@ -514,8 +514,9 @@ class CourseCreationTool(BaseTool):
             tools=self.tools, 
             verbose=True,
             handle_parsing_errors=handle_tool_error,
-            max_iterations=10,  # 최대 반복 횟수 제한
-            return_intermediate_steps=True  # 중간 단계 반환 (디버깅용)
+            max_iterations=15,  # 최대 반복 횟수 증가 (10 -> 15)
+            return_intermediate_steps=True,  # 중간 단계 반환 (디버깅용)
+            max_execution_time=300  # 최대 실행 시간 5분
         )
 
         # 날씨 정보 포맷팅 (지역 기준 단일 날씨 정보)
@@ -537,6 +538,7 @@ check_routing(places=[장소리스트], mode="transit")
 - 각 장소는 coordinates 필드를 포함해야 합니다: {"name":"장소명","coordinates":{"lat":위도,"lng":경도}}
 """
         
+        allowed_indices = list(range(len(places)))
         try:
             planning_result = await planner_executer.ainvoke({
                 'input': f"""{user_preferences['theme']}에 맞는 여행 코스를 제작해 주세요. {'날씨 정보를 반드시 고려하여 실내/야외 장소를 적절히 선택하고, 날씨가 나쁘면 이동 경로를 최소화하세요.' if weather_info else ''}
@@ -545,11 +547,37 @@ check_routing(places=[장소리스트], mode="transit")
                 "places": self._format_places_for_prompt(places),
                 "user_preferences": json.dumps(user_preferences, ensure_ascii=False),
                 "time_constraints": json.dumps(time_constraints, ensure_ascii=False),
-                "weather_info": weather_info_str
+                "weather_info": weather_info_str,
+                "allowed_indices": json.dumps(allowed_indices, ensure_ascii=False)
                 })
         except Exception as e:
             error_msg = str(e)
             print(f"⚠️ AgentExecutor 실행 중 오류: {error_msg}")
+            
+            # max_iterations 도달 오류 처리
+            if "max iterations" in error_msg.lower() or "max_iterations" in error_msg.lower() or "stopped due to max iterations" in error_msg.lower():
+                print(f"   ⚠️ Agent가 최대 반복 횟수에 도달했습니다. 중간 단계를 확인합니다...")
+                # 중간 단계에서 마지막 출력 시도
+                intermediate_steps = planning_result.get('intermediate_steps', []) if 'intermediate_steps' in locals() else []
+                if intermediate_steps:
+                    # 마지막 단계의 출력 확인
+                    for step in reversed(intermediate_steps):
+                        if isinstance(step, tuple) and len(step) >= 2:
+                            last_output = step[1] if isinstance(step[1], str) else str(step[1])
+                            if last_output and ('{' in last_output or '[' in last_output):
+                                print(f"   마지막 단계에서 JSON 형식의 출력을 찾았습니다. 복구를 시도합니다...")
+                                try:
+                                    result = self._JSON_verification(last_output)
+                                    # 성공하면 계속 진행
+                                    break
+                                except:
+                                    continue
+                # 복구 실패 시 에러 발생
+                raise ValueError(
+                    f"Agent가 최대 반복 횟수에 도달하여 작업을 완료하지 못했습니다. "
+                    f"프롬프트가 너무 복잡하거나 장소가 너무 많을 수 있습니다. "
+                    f"오류: {error_msg}"
+                )
             
             # check_routing validation 오류인 경우 더 명확한 메시지
             if "Field required" in error_msg and "places" in error_msg:
@@ -573,14 +601,86 @@ check_routing(places=[장소리스트], mode="transit")
         # 응답에서 JSON 추출
         # response_content = response.choices[0].message.content.strip()
         if 'output' not in planning_result:
-            raise ValueError(f"LLM 응답에 'output' 키가 없습니다. 응답: {planning_result}")
+            # 중간 단계 확인
+            intermediate_steps = planning_result.get('intermediate_steps', [])
+            if intermediate_steps:
+                print(f"⚠️ Agent가 {len(intermediate_steps)}번의 단계를 수행했지만 최종 출력이 없습니다.")
+                # 마지막 단계의 출력 확인
+                last_step = intermediate_steps[-1] if intermediate_steps else None
+                if last_step:
+                    print(f"   마지막 단계: {str(last_step)[:200]}...")
+            
+            # output이 없으면 에러 메시지 생성
+            error_msg = f"LLM 응답에 'output' 키가 없습니다."
+            if 'intermediate_steps' in planning_result:
+                error_msg += f" Agent가 {len(planning_result['intermediate_steps'])}번의 단계를 수행했습니다."
+            raise ValueError(f"{error_msg}\n응답: {str(planning_result)[:500]}")
+        
         response_content = planning_result['output'].strip()
         
-        result = self._JSON_verification(response_content)
+        # 빈 응답 체크
+        if not response_content:
+            raise ValueError("LLM이 빈 응답을 반환했습니다. Agent가 작업을 완료하지 못했을 수 있습니다.")
+        
+        try:
+            result = self._JSON_verification(response_content)
+        except ValueError as json_error:
+            # JSON 파싱 실패 시 더 자세한 정보 제공
+            error_msg = str(json_error)
+            print(f"❌ JSON 파싱 실패: {error_msg}")
+            
+            # 중간 단계 정보 출력
+            if 'intermediate_steps' in planning_result:
+                print(f"   Agent 실행 단계: {len(planning_result.get('intermediate_steps', []))}개")
+            
+            # 응답 내용 일부 출력
+            print(f"   응답 내용 (처음 500자): {response_content[:500]}")
+            
+            # 폴백: 최소한의 JSON 구조라도 생성 시도
+            print(f"   ⚠️ JSON 파싱 실패로 인해 기본 코스 구조를 생성합니다...")
+            # 빈 코스 구조 반환 (나중에 검증 로직에서 처리)
+            result = {
+                "selected_places": [],
+                "sequence": [],
+                "estimated_duration": {},
+                "course_description": "코스 생성 중 오류가 발생했습니다.",
+                "reasoning": f"JSON 파싱 오류: {error_msg}"
+            }
 
         # ============================================================
         # [최종 버그 수정] LLM이 반환한 인덱스 유효성 검증
         # ============================================================
+        
+        # 문자열 인덱스(장소명) 정규화: 가능한 경우 인덱스로 변환
+        name_to_index = {}
+        for i, place in enumerate(places):
+            name = (place.get("name") or "").strip().lower()
+            if name:
+                name_to_index[name] = i
+        
+        def _normalize_index(value):
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                key = value.strip().lower()
+                return name_to_index.get(key)
+            return None
+        
+        if "selected_places" in result and isinstance(result["selected_places"], list):
+            normalized_selected = []
+            for item in result["selected_places"]:
+                normalized = _normalize_index(item)
+                if normalized is not None:
+                    normalized_selected.append(normalized)
+            result["selected_places"] = normalized_selected
+        
+        if "sequence" in result and isinstance(result["sequence"], list):
+            normalized_sequence = []
+            for item in result["sequence"]:
+                normalized = _normalize_index(item)
+                if normalized is not None:
+                    normalized_sequence.append(normalized)
+            result["sequence"] = normalized_sequence
         
         # 저장된 장소 인덱스 추출 (나중에 강제 추가를 위해)
         saved_place_indices = []
@@ -597,63 +697,71 @@ check_routing(places=[장소리스트], mode="transit")
                 if isinstance(index, int) and 0 <= index < len(places):
                     valid_selected_indices.append(index)
                 else:
-                    print(f"   ⚠️ LLM이 잘못된 장소 인덱스({index})를 반환하여 무시합니다.")
+                    self._log_llm_warning(f"   ⚠️ LLM이 잘못된 장소 인덱스({index})를 반환하여 무시합니다.")
         else:
-            print(f"   ⚠️ LLM이 'selected_places'를 반환하지 않았거나 리스트가 아닙니다.")
+            self._log_llm_warning("   ⚠️ LLM이 'selected_places'를 반환하지 않았거나 리스트가 아닙니다.")
         
         # 저장된 장소가 selected_places에 포함되지 않은 경우 강제 추가
         missing_saved_indices = [idx for idx in saved_place_indices if idx not in valid_selected_indices]
         if missing_saved_indices:
-            print(f"   ⚠️ 저장된 장소 {len(missing_saved_indices)}개가 selected_places에 포함되지 않아 강제로 추가합니다.")
+            self._log_llm_warning(f"   ⚠️ 저장된 장소 {len(missing_saved_indices)}개가 selected_places에 포함되지 않아 강제로 추가합니다.")
             for idx in missing_saved_indices:
                 if idx not in valid_selected_indices:
                     valid_selected_indices.insert(0, idx)  # 맨 앞에 추가 (최우선순위)
-                    print(f"   ✅ 저장된 장소 강제 추가: [{idx}] {places[idx].get('name')}")
+                    self._log_llm_warning(f"   ✅ 저장된 장소 강제 추가: [{idx}] {places[idx].get('name')}")
         
         # valid_selected_indices가 비어있을 때 폴백 로직
         if not valid_selected_indices:
             # 저장된 장소가 있으면 사용
             if saved_place_indices:
-                print(f"   ⚠️ LLM이 장소를 선택하지 않았지만, 저장된 장소 {len(saved_place_indices)}개를 사용합니다.")
+                self._log_llm_warning(f"   ⚠️ LLM이 장소를 선택하지 않았지만, 저장된 장소 {len(saved_place_indices)}개를 사용합니다.")
                 valid_selected_indices = saved_place_indices.copy()
             # 저장된 장소도 없으면 최소한 처음 몇 개라도 선택 (최대 5개)
             elif len(places) > 0:
                 fallback_count = min(5, len(places))
-                print(f"   ⚠️ LLM이 장소를 선택하지 않았고 저장된 장소도 없어, 처음 {fallback_count}개 장소를 자동 선택합니다.")
+                self._log_llm_warning(f"   ⚠️ LLM이 장소를 선택하지 않았고 저장된 장소도 없어, 처음 {fallback_count}개 장소를 자동 선택합니다.")
                 valid_selected_indices = list(range(fallback_count))
             else:
                 raise ValueError("선택할 수 있는 장소가 없습니다.")
+        
+        # selected_places 내 위치 매핑 (original_index -> position)
+        position_map = {orig_idx: pos for pos, orig_idx in enumerate(valid_selected_indices)}
 
-        # 2. sequence 인덱스 검증 (selected_places의 인덱스를 참조하므로 주의)
+        # 2. sequence 인덱스 검증 (selected_places의 인덱스를 참조)
         valid_sequence = []
         if "sequence" in result and isinstance(result["sequence"], list):
-            for seq_index in result["sequence"]:
-                # sequence의 인덱스가 valid_selected_indices의 유효한 범위 내에 있는지 확인
-                if isinstance(seq_index, int) and seq_index in valid_selected_indices:
-                    valid_sequence.append(seq_index)
-                else:
-                    print(f"   ⚠️ LLM이 잘못된 순서 인덱스({seq_index})를 반환하여 무시합니다.")
+            # 1) selected_places 위치 인덱스(0..N-1)인지 먼저 확인
+            if all(isinstance(seq_index, int) and 0 <= seq_index < len(valid_selected_indices) for seq_index in result["sequence"]):
+                valid_sequence = result["sequence"].copy()
+            # 2) original_index로 왔으면 selected_places 기준 위치로 변환
+            elif all(isinstance(seq_index, int) and seq_index in position_map for seq_index in result["sequence"]):
+                valid_sequence = [position_map[seq_index] for seq_index in result["sequence"]]
+            else:
+                for seq_index in result["sequence"]:
+                    self._log_llm_warning(f"   ⚠️ LLM이 잘못된 순서 인덱스({seq_index})를 반환하여 무시합니다.")
         else:
-            print(f"   ⚠️ LLM이 'sequence'를 반환하지 않았거나 리스트가 아닙니다.")
+            self._log_llm_warning("   ⚠️ LLM이 'sequence'를 반환하지 않았거나 리스트가 아닙니다.")
         
         # 만약 sequence가 잘못되었으면, 그냥 selected 순서대로라도 복구
         if not valid_sequence or len(valid_sequence) != len(valid_selected_indices):
-            print(f"   ⚠️ LLM이 반환한 sequence가 유효하지 않아, 선택된 순서로 복구합니다.")
+            self._log_llm_warning("   ⚠️ LLM이 반환한 sequence가 유효하지 않아, 선택된 순서로 복구합니다.")
             valid_sequence = list(range(len(valid_selected_indices)))
 
-        # 3. estimated_duration 키 검증
+        # 3. estimated_duration 키 검증 (selected_places 기준 위치 인덱스 사용)
         valid_duration = {}
         if "estimated_duration" in result and isinstance(result["estimated_duration"], dict):
             for key, value in result["estimated_duration"].items():
                 try:
                     # 키를 정수로 변환하여 유효한 인덱스인지 확인
                     index_key = int(key)
-                    if index_key in valid_selected_indices:
+                    if 0 <= index_key < len(valid_selected_indices):
                         valid_duration[str(index_key)] = value
+                    elif index_key in position_map:
+                        valid_duration[str(position_map[index_key])] = value
                 except (ValueError, TypeError):
                     continue # 키가 숫자가 아니면 무시
         else:
-            print(f"   ⚠️ LLM이 'estimated_duration'를 반환하지 않았거나 딕셔너리가 아닙니다.")
+            self._log_llm_warning("   ⚠️ LLM이 'estimated_duration'를 반환하지 않았거나 딕셔너리가 아닙니다.")
 
         # 검증된 인덱스를 사용하여 최종 결과 생성
         selected_places = [places[i] for i in valid_selected_indices]
@@ -722,9 +830,11 @@ check_routing(places=[장소리스트], mode="transit")
         return {
             "course": {
                 "places": places,
-                "sequence": result["sequence"],
-                "estimated_duration": result["estimated_duration"],
-                "course_description": course_description
+                "sequence": valid_sequence,
+                "estimated_duration": valid_duration,
+                "course_description": course_description,
+                "weather_info": course_weather_info,
+                "visit_date": user_preferences.get("visit_date")
             },
             "reasoning": reasoning
         }
@@ -820,6 +930,29 @@ check_routing(places=[장소리스트], mode="transit")
         return result
 
     
+    def _remove_trailing_commas(self, json_str: str) -> str:
+        """
+        JSON 문자열에서 trailing comma 제거
+        배열과 객체 내부의 마지막 요소 뒤의 쉼표를 제거합니다.
+        """
+        # 문자열 내부의 쉼표는 건드리지 않도록 주의
+        # 1. 배열 내부의 trailing comma 제거: ], }] 앞의 쉼표
+        # 예: [1, 2, 3,] -> [1, 2, 3]
+        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        
+        # 2. 객체 내부의 trailing comma 제거: }, ]} 앞의 쉼표
+        # 예: {"a": 1, "b": 2,} -> {"a": 1, "b": 2}
+        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        
+        # 3. 중첩된 구조에서도 작동하도록 여러 번 적용
+        for _ in range(5):  # 최대 5번 중첩 구조 처리
+            old_str = json_str
+            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+            if old_str == json_str:
+                break
+        
+        return json_str
+    
     def _JSON_verification(self, response_content):
         if not response_content:
             raise ValueError("LLM이 빈 응답을 반환했습니다.")
@@ -844,6 +977,9 @@ check_routing(places=[장소리스트], mode="transit")
         if json_start_idx != -1 and json_end_idx > json_start_idx:
             response_content = response_content[json_start_idx:json_end_idx]
         
+        # Trailing comma 제거 (파싱 전에 미리 처리)
+        response_content = self._remove_trailing_commas(response_content)
+        
         # JSON 파싱 (강화된 오류 처리)
         result = None
         try:
@@ -852,19 +988,21 @@ check_routing(places=[장소리스트], mode="transit")
             if not isinstance(result, dict):
                 raise ValueError(f"LLM 응답이 딕셔너리가 아닙니다. 타입: {type(result)}")
         except json.JSONDecodeError as e:
-            # 복구 시도 1: 첫 번째 { 부터 마지막 } 까지 다시 추출
+            # 복구 시도 1: 첫 번째 { 부터 마지막 } 까지 다시 추출 + trailing comma 제거
             try:
                 first_brace = response_content.find('{')
                 last_brace = response_content.rfind('}')
                 if first_brace != -1 and last_brace > first_brace:
                     cleaned_json = response_content[first_brace:last_brace+1]
+                    # Trailing comma 제거
+                    cleaned_json = self._remove_trailing_commas(cleaned_json)
                     result = json.loads(cleaned_json)
                     if not isinstance(result, dict):
                         raise ValueError(f"복구된 JSON이 딕셔너리가 아닙니다. 타입: {type(result)}")
                 else:
                     raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}")
             except:
-                # 복구 시도 2: 불완전한 JSON 복구
+                # 복구 시도 2: 불완전한 JSON 복구 + trailing comma 제거
                 try:
                     json_part = response_content[response_content.find('{'):]
                     # 닫히지 않은 문자열/배열/객체 닫기
@@ -875,6 +1013,8 @@ check_routing(places=[장소리스트], mode="transit")
                     
                     json_part += '}' * (open_braces - close_braces)
                     json_part += ']' * (open_brackets - close_brackets)
+                    # Trailing comma 제거 (여러 번 적용)
+                    json_part = self._remove_trailing_commas(json_part)
                     json_part = json_part.rstrip().rstrip(',')
                     if not json_part.endswith('}'):
                         json_part += '}'
@@ -882,9 +1022,10 @@ check_routing(places=[장소리스트], mode="transit")
                     result = json.loads(json_part)
                     if not isinstance(result, dict):
                         raise ValueError(f"복구된 JSON이 딕셔너리가 아닙니다. 타입: {type(result)}")
-                except:
+                except Exception as recovery_error:
                     # 모든 복구 시도 실패
-                    raise ValueError(f"JSON 파싱 오류: {str(e)}\n응답 내용: {response_content[:500]}\n\nLLM이 JSON 형식으로 응답하지 않았습니다. 작업을 거부했거나 다른 형식으로 응답한 것 같습니다.")
+                    error_detail = f"원본 오류: {str(e)}\n복구 시도 오류: {str(recovery_error)}"
+                    raise ValueError(f"JSON 파싱 오류: {error_detail}\n응답 내용: {response_content[:500]}\n\nLLM이 JSON 형식으로 응답하지 않았습니다. 작업을 거부했거나 다른 형식으로 응답한 것 같습니다.")
         
         # result가 None이면 에러
         if result is None:
@@ -898,7 +1039,7 @@ check_routing(places=[장소리스트], mode="transit")
 
     def _format_places_for_prompt(self, places: List[Dict[str, Any]]) -> str:
         """
-        프롬프트용 장소 정보 포맷팅 (토큰 최적화)
+        프롬프트용 장소 정보 포맷팅 (토큰 최적화 - 더욱 간결하게)
         
         Args:
             places: 장소 리스트 (name, category, coordinates, rating, trust_score, address, source_url, map_url 포함)
@@ -907,7 +1048,7 @@ check_routing(places=[장소리스트], mode="transit")
             포맷팅된 문자열
         """
         # 장소 개수 제한 (너무 많으면 토큰 초과) - 더 엄격하게 제한
-        MAX_PLACES = 30  # 50 -> 30으로 감소
+        MAX_PLACES = 20  # 30 -> 20으로 감소 (토큰 길이 초과 방지)
         if len(places) > MAX_PLACES:
             print(f"⚠️ 장소가 {len(places)}개로 너무 많아 {MAX_PLACES}개로 제한합니다.")
             places = places[:MAX_PLACES]
@@ -916,34 +1057,54 @@ check_routing(places=[장소리스트], mode="transit")
         for i, place in enumerate(places):
             # original_index는 0부터 시작 (프롬프트에서 명확히 표시)
             original_idx = place.get('original_index', i)
-            # 최소한의 정보만 포함 (토큰 절약)
-            info = f"[{original_idx}] {place.get('name', 'Unknown')}"
             
-            # 카테고리 (간략하게)
-            if place.get('category'):
-                info += f"|{place['category']}"
+            # 장소 이름 (최대 25자로 제한)
+            name = place.get('name', 'Unknown')
+            if len(name) > 25:
+                name = name[:22] + "..."
+            
+            # 최소한의 정보만 포함 (토큰 절약)
+            info = f"[{original_idx}]{name}"
+            
+            # 카테고리 (간략하게, 1글자로 축약)
+            category = place.get('category', '')
+            if category:
+                category_map = {
+                    '식당': '식', '카페': '카', '관광지': '관', 
+                    '쇼핑': '쇼', '활동': '활', '숙소': '숙'
+                }
+                short_cat = category_map.get(category, category[:1] if category else '')
+                if short_cat:
+                    info += f"|{short_cat}"
 
             # 저장된 장소 플래그 (간략하게)
             if place.get('is_saved_place'):
                 info += "|⭐"
             
-            # 좌표 정보 (정밀도 낮춤: 소수점 3자리까지만)
+            # 좌표 정보 (정밀도 더 낮춤: 소수점 2자리까지만)
             coords = place.get('coordinates')
             if coords:
-                lat = round(float(coords.get('lat', 0)), 3)
-                lng = round(float(coords.get('lng', 0)), 3)
-                info += f"|{lat},{lng}"
+                lat = round(float(coords.get('lat', 0)), 2)
+                lng = round(float(coords.get('lng', 0)), 2)
+                info += f"|{lat:.2f},{lng:.2f}"
 
-            # 점수 정보 (간략하게 - 평점만)
+            # 평점 (소수점 제거, 정수만)
             if place.get('rating'):
-                info += f"|⭐{place['rating']}"
+                rating = int(float(place['rating']))
+                info += f"|{rating}"
                 
-            # 주소 정보 (최대 30자로 더 짧게)
-            if place.get('address'):
-                address = place['address']
-                if len(address) > 30:
-                    address = address[:27] + "..."
-                info += f"|{address}"
+            # 주소 정보 제거 또는 매우 짧게 (최대 15자)
+            # 주소는 토큰을 많이 소비하므로 선택적으로만 포함
+            # if place.get('address'):
+            #     address = place['address']
+            #     # 구/동 정보만 추출 시도
+            #     import re
+            #     match = re.search(r'([가-힣]+구|[가-힣]+동)', address)
+            #     if match:
+            #         address = match.group(1)
+            #     elif len(address) > 15:
+            #         address = address[:12] + "..."
+            #     info += f"|{address}"
             
             # 링크, 설명 등은 모두 제거 (토큰 절약)
             formatted.append(info)

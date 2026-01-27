@@ -26,23 +26,50 @@ class GoogleMapsTool(BaseTool):
             description="장소들 간의 최적 경로를 계산하고 동선을 최적화합니다.",
             config=config or {}
         )
-        self.api_key = self.config.get("api_key") or self.config.get("google_maps_api_key") or os.getenv("GOOGLE_MAPS_API_KEY")
+        def _looks_like_google_key(key: Optional[str]) -> bool:
+            return isinstance(key, str) and key.startswith("AIza")
         
-        # API 키 정리 (앞뒤 공백 제거)
-        if self.api_key:
-            self.api_key = str(self.api_key).strip()
-            if not self.api_key:
-                self.api_key = None
+        def _mask_key(key: Optional[str]) -> str:
+            if not key:
+                return "없음"
+            key = str(key)
+            if len(key) <= 8:
+                return "***"
+            return f"{key[:4]}...{key[-4:]}"
+        
+        # 후보 키 우선순위: google_maps_api_key > 환경변수 GOOGLE_MAPS_API_KEY > weather_api_key(구글형) > api_key
+        candidate_keys = [
+            ("google_maps_api_key", self.config.get("google_maps_api_key")),
+            ("env:GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY")),
+            ("weather_api_key", self.config.get("weather_api_key") or os.getenv("WEATHER_API_KEY") or os.getenv("OPENWEATHER_API_KEY")),
+            ("api_key", self.config.get("api_key")),
+        ]
+        
+        self.api_key = None
+        for source, raw_key in candidate_keys:
+            if not raw_key:
+                continue
+            raw_key = str(raw_key).strip()
+            if not raw_key:
+                continue
+            if _looks_like_google_key(raw_key):
+                self.api_key = raw_key
+                if source == "weather_api_key":
+                    print("🔁 Weather API 키를 Google Maps 키로 사용합니다.")
+                break
+            else:
+                # 구글 키가 아닌 경우는 무시하고 다음 후보로 진행
+                print(f"⚠️ Google Maps API 키 형식이 올바르지 않습니다. source={source}, key={_mask_key(raw_key)}")
         
         # API 키 디버깅 정보 출력
         if self.api_key:
-            api_key_preview = f"{self.api_key[:10]}...{self.api_key[-5:]}" if len(self.api_key) > 15 else "***"
+            api_key_preview = f"{self.api_key[:6]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
             print(f"🔑 Google Maps API 키 로드됨: {api_key_preview} (길이: {len(self.api_key)})")
         else:
             print("⚠️ Google Maps API 키를 찾을 수 없습니다.")
-            print(f"   - config['api_key']: {self.config.get('api_key')}")
-            print(f"   - config['google_maps_api_key']: {self.config.get('google_maps_api_key')}")
-            print(f"   - 환경변수 GOOGLE_MAPS_API_KEY: {os.getenv('GOOGLE_MAPS_API_KEY')}")
+            print(f"   - config['google_maps_api_key']: {_mask_key(self.config.get('google_maps_api_key'))}")
+            print(f"   - 환경변수 GOOGLE_MAPS_API_KEY: {_mask_key(os.getenv('GOOGLE_MAPS_API_KEY'))}")
+            print(f"   - config['api_key']: {_mask_key(self.config.get('api_key'))}")
         
         # API 키가 없어도 클라이언트는 None으로 유지 (나중에 설정 가능)
         self.client = None
@@ -63,23 +90,47 @@ class GoogleMapsTool(BaseTool):
         self._max_retries = 3
         self._retry_delay = 1.0  # 초
         
-        # Weather API 설정 (Google Weather API 사용)
-        # Google Weather API는 Google Maps API 키를 사용하거나 별도의 Weather API 키를 사용할 수 있습니다
+        def _looks_like_google_key(key: Optional[str]) -> bool:
+            return isinstance(key, str) and key.startswith("AIza")
+        
+        # Weather API 설정 (OpenWeather 우선)
+        # Google Weather API는 Google Maps API 키를 사용할 수 있습니다
         self.weather_api_key = (
             self.config.get("weather_api_key") or 
             self.config.get("google_maps_api_key") or  # Google Maps API 키도 사용 가능
             os.getenv("WEATHER_API_KEY") or 
-            os.getenv("GOOGLE_MAPS_API_KEY") or  # Google Maps API 키도 사용 가능
-            os.getenv("OPENWEATHER_API_KEY")  # 폴백: OpenWeatherMap (구버전 호환)
+            os.getenv("GOOGLE_MAPS_API_KEY")  # Google Maps API 키도 사용 가능
         )
+        # API 키 정리 (앞뒤 공백 제거)
+        if self.weather_api_key:
+            self.weather_api_key = str(self.weather_api_key).strip()
+            if not self.weather_api_key:
+                self.weather_api_key = None
+        
+        # OpenWeatherMap 키 (우선 사용)
+        raw_openweather = (
+            self.config.get("openweather_api_key") or 
+            os.getenv("OPENWEATHER_API_KEY") or 
+            os.getenv("WEATHER_API_KEY")
+        )
+        if raw_openweather and not _looks_like_google_key(raw_openweather):
+            self.openweather_api_key = str(raw_openweather).strip()
+        else:
+            self.openweather_api_key = None
+        
         # Google Weather API 엔드포인트
         self.weather_api_url = self.config.get("weather_api_url", "https://weather.googleapis.com/v1/currentConditions:lookup")
-        self.use_google_weather = self.config.get("use_google_weather", True)  # 기본값: Google Weather API 사용
+        self.use_google_weather = False  # 기본은 OpenWeather 사용
         
         if self.weather_api_key:
-            print(f"🌤️ Weather API 키 로드됨 (Google Weather API 사용)")
+            api_key_preview = f"{self.weather_api_key[:6]}...{self.weather_api_key[-4:]}" if len(self.weather_api_key) > 12 else "***"
+            print(f"🌤️ Weather API 키 로드됨: {api_key_preview} (Google Weather API 사용)")
         else:
             print("⚠️ Weather API 키가 설정되지 않았습니다. 날씨 정보를 가져올 수 없습니다.")
+            print(f"   - config['weather_api_key']: {_mask_key(self.config.get('weather_api_key'))}")
+            print(f"   - config['google_maps_api_key']: {_mask_key(self.config.get('google_maps_api_key'))}")
+            print(f"   - 환경변수 WEATHER_API_KEY: {_mask_key(os.getenv('WEATHER_API_KEY'))}")
+            print(f"   - 환경변수 GOOGLE_MAPS_API_KEY: {_mask_key(os.getenv('GOOGLE_MAPS_API_KEY'))}")
     
     def _clean_html_tags(self, text: str) -> str:
         """HTML 태그 제거"""
@@ -135,6 +186,41 @@ class GoogleMapsTool(BaseTool):
             coordinates.append({"lat": lat / 1e5, "lng": lng / 1e5})
         
         return coordinates
+    
+    def _sample_path_coordinates(self, coordinates: List[Dict[str, float]], max_points: int = 20) -> List[Dict[str, float]]:
+        """
+        경로 좌표를 샘플링하여 좌표 수를 줄입니다 (토큰 제한 방지)
+        경로의 모양은 유지하면서 좌표 수를 최적화합니다.
+        
+        Args:
+            coordinates: 원본 좌표 리스트
+            max_points: 최대 좌표 수 (기본값: 100)
+            
+        Returns:
+            샘플링된 좌표 리스트
+        """
+        if not coordinates or len(coordinates) <= max_points:
+            return coordinates
+        
+        # 항상 첫 번째와 마지막 좌표는 포함
+        if len(coordinates) <= 2:
+            return coordinates
+        
+        # 샘플링 간격 계산
+        total_points = len(coordinates)
+        sample_interval = max(1, total_points // max_points)
+        
+        sampled = [coordinates[0]]  # 첫 번째 좌표
+        
+        # 중간 좌표 샘플링
+        for i in range(sample_interval, total_points - 1, sample_interval):
+            sampled.append(coordinates[i])
+        
+        # 마지막 좌표 추가 (아직 포함되지 않았다면)
+        if sampled[-1] != coordinates[-1]:
+            sampled.append(coordinates[-1])
+        
+        return sampled
     
     def _format_transit_instruction(self, step: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1616,6 +1702,20 @@ class GoogleMapsTool(BaseTool):
                                     polyline_encoded = step["polyline"].get("points", "")
                                     if polyline_encoded:
                                         polyline_points = self._decode_polyline(polyline_encoded)
+                                
+                                # polyline이 없거나 비어있으면 start_location과 end_location으로 최소 경로 생성
+                                if not polyline_points or len(polyline_points) == 0:
+                                    start_loc = step.get("start_location", {})
+                                    end_loc = step.get("end_location", {})
+                                    if start_loc.get("lat") and start_loc.get("lng") and end_loc.get("lat") and end_loc.get("lng"):
+                                        polyline_points = [
+                                            {"lat": start_loc["lat"], "lng": start_loc["lng"]},
+                                            {"lat": end_loc["lat"], "lng": end_loc["lng"]}
+                                        ]
+                                
+                                # 좌표 수가 너무 많으면 샘플링 (토큰 제한 방지)
+                                polyline_points = self._sample_path_coordinates(polyline_points, max_points=20)
+                                
                                 formatted_step["path"] = polyline_points
                                 
                                 steps.append(formatted_step)
@@ -1631,6 +1731,8 @@ class GoogleMapsTool(BaseTool):
                                 "distance_text": leg.get("distance", {}).get("text", ""),
                                 "steps": steps,
                                 "mode": mode,
+                                "raw_leg": leg,
+                                "raw_steps": leg.get("steps", []),
                                 "start_location": {
                                     "lat": leg.get("start_location", {}).get("lat", 0),
                                     "lng": leg.get("start_location", {}).get("lng", 0)
@@ -1808,6 +1910,20 @@ class GoogleMapsTool(BaseTool):
                                         polyline_encoded = step["polyline"].get("points", "")
                                         if polyline_encoded:
                                             polyline_points = self._decode_polyline(polyline_encoded)
+                                    
+                                    # polyline이 없거나 비어있으면 start_location과 end_location으로 최소 경로 생성
+                                    if not polyline_points or len(polyline_points) == 0:
+                                        start_loc = step.get("start_location", {})
+                                        end_loc = step.get("end_location", {})
+                                        if start_loc.get("lat") and start_loc.get("lng") and end_loc.get("lat") and end_loc.get("lng"):
+                                            polyline_points = [
+                                                {"lat": start_loc["lat"], "lng": start_loc["lng"]},
+                                                {"lat": end_loc["lat"], "lng": end_loc["lng"]}
+                                            ]
+                                    
+                                    # 좌표 수가 너무 많으면 샘플링 (토큰 제한 방지)
+                                    polyline_points = self._sample_path_coordinates(polyline_points, max_points=100)
+                                    
                                     formatted_step["path"] = polyline_points
                                     
                                     steps.append(formatted_step)
@@ -1824,6 +1940,8 @@ class GoogleMapsTool(BaseTool):
                                     "distance_text": leg.get("distance", {}).get("text", ""),
                                     "steps": steps,
                                     "mode": try_mode,  # 실제 사용된 교통수단
+                                    "raw_leg": leg,
+                                    "raw_steps": leg.get("steps", []),
                                     "start_location": {
                                         "lat": leg.get("start_location", {}).get("lat", 0),
                                         "lng": leg.get("start_location", {}).get("lng", 0)
@@ -1934,6 +2052,46 @@ class GoogleMapsTool(BaseTool):
                 "date": date or datetime.now().strftime("%Y-%m-%d")
             }
         
+        async def fetch_openweather(session: aiohttp.ClientSession, target_date: datetime) -> Optional[Dict[str, Any]]:
+            if not self.openweather_api_key:
+                return None
+            
+            try:
+                url = "https://api.openweathermap.org/data/2.5/weather"
+                params = {
+                    "lat": float(lat),
+                    "lon": float(lng),
+                    "appid": self.openweather_api_key,
+                    "units": "metric",
+                    "lang": "kr"
+                }
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        return None
+                    data = await response.json()
+                    
+                    weather_list = data.get("weather", []) or []
+                    first_weather = weather_list[0] if weather_list else {}
+                    temp = (data.get("main", {}) or {}).get("temp")
+                    humidity = (data.get("main", {}) or {}).get("humidity")
+                    wind_speed = (data.get("wind", {}) or {}).get("speed")
+                    description = first_weather.get("description", "")
+                    condition = first_weather.get("main", "")
+                    icon = first_weather.get("icon", "")
+                    
+                    return {
+                        "temperature": round(float(temp), 1) if temp is not None else None,
+                        "condition": condition or "정보 없음",
+                        "description": description or condition or "정보 없음",
+                        "humidity": int(humidity) if humidity is not None else None,
+                        "wind_speed": round(float(wind_speed), 1) if wind_speed is not None else None,
+                        "icon": icon,
+                        "icon_type": "openweather",
+                        "date": target_date.strftime("%Y-%m-%d")
+                    }
+            except Exception:
+                return None
+        
         try:
             # 날짜 파싱
             if date:
@@ -1948,26 +2106,63 @@ class GoogleMapsTool(BaseTool):
             else:
                 target_date = datetime.now()
             
-            # Google Weather API 호출
+            # OpenWeather 우선 호출
             async with aiohttp.ClientSession() as session:
-                # Google Weather API 사용 여부 확인
-                if self.use_google_weather and "weather.googleapis.com" in self.weather_api_url:
-                    # Google Weather API 호출
-                    url = self.weather_api_url
-                    params = {
-                        "key": self.weather_api_key,
-                        "location.latitude": lat,
-                        "location.longitude": lng,
-                        "units_system": "METRIC"  # 섭씨, km/h 단위 사용
+                if self.openweather_api_key:
+                    fallback = await fetch_openweather(session, target_date)
+                    if fallback:
+                        return fallback
+
+                # OpenWeather 실패 시 Google Weather 시도
+                url = self.weather_api_url
+                
+                # 위도/경도 값 검증
+                if lat is None or lng is None:
+                    error_msg = f"위도/경도 값이 없습니다. lat={lat}, lng={lng}"
+                    print(f"❌ {error_msg}")
+                    return {
+                        "temperature": None,
+                        "condition": "정보 없음",
+                        "description": f"날씨 정보를 가져올 수 없습니다: {error_msg}",
+                        "humidity": None,
+                        "wind_speed": None,
+                        "icon": None,
+                        "icon_type": None,
+                        "date": target_date.strftime("%Y-%m-%d")
                     }
-                    
-                    async with session.get(url, params=params) as response:
+                
+                # Google Weather API 호출 (POST 방식 우선, 실패 시 GET 방식 시도)
+                # 요청 본문에 location 정보 포함
+                post_data = {
+                    "location": {
+                        "latitude": float(lat),
+                        "longitude": float(lng)
+                    },
+                    "units": "METRIC"
+                }
+                
+                # API 키를 URL 파라미터로 추가
+                url_with_key = f"{url}?key={self.weather_api_key}"
+                
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                
+                # GET 방식 파라미터 (POST 실패 시 사용)
+                get_params = {
+                    "key": self.weather_api_key,
+                    "location.latitude": float(lat),
+                    "location.longitude": float(lng),
+                    "units_system": "METRIC"
+                }
+                
+                try:
+                    # 먼저 POST 방식으로 시도
+                    async with session.post(url_with_key, json=post_data, headers=headers) as response:
                         if response.status == 200:
                             data = await response.json()
                             
                             # Google Weather API 응답 파싱
-                            # 실제 응답 구조: 루트 레벨에 직접 필드가 있음
-                            
                             # 온도 (섭씨) - temperature 객체에서 degrees 추출
                             temperature_obj = data.get("temperature", {})
                             if isinstance(temperature_obj, dict):
@@ -2031,17 +2226,134 @@ class GoogleMapsTool(BaseTool):
                                 "date": target_date.strftime("%Y-%m-%d")
                             }
                         else:
-                            error_text = await response.text()
-                            print(f"⚠️ Google Weather API 호출 실패: {response.status} - {error_text}")
-                            # OpenWeatherMap으로 폴백 시도
-                            return await self._get_weather_openweathermap_fallback(lat, lng, target_date)
-                else:
-                    # OpenWeatherMap API 호출 (폴백)
-                    return await self._get_weather_openweathermap_fallback(lat, lng, target_date)
+                            # POST 방식 실패 시 GET 방식으로 재시도
+                            print(f"⚠️ POST 방식 실패 (HTTP {response.status}), GET 방식으로 재시도합니다.")
+                            async with session.get(url, params=get_params) as get_response:
+                                if get_response.status == 200:
+                                    data = await get_response.json()
+                                    
+                                    # Google Weather API 응답 파싱 (POST와 동일)
+                                    temperature_obj = data.get("temperature", {})
+                                    if isinstance(temperature_obj, dict):
+                                        temp_celsius = temperature_obj.get("degrees", 0)
+                                    else:
+                                        temp_celsius = temperature_obj if temperature_obj else 0
+                                    
+                                    weather_condition = data.get("weatherCondition", {})
+                                    condition_code = weather_condition.get("type", "") if isinstance(weather_condition, dict) else ""
+                                    
+                                    condition_map = {
+                                        "CLEAR": "맑음",
+                                        "PARTLY_CLOUDY": "구름 조금",
+                                        "MOSTLY_CLOUDY": "구름 많음",
+                                        "CLOUDY": "흐림",
+                                        "RAIN": "비",
+                                        "SHOWERS": "소나기",
+                                        "THUNDERSTORMS": "천둥번개",
+                                        "SNOW": "눈",
+                                        "FOG": "안개",
+                                        "HAZE": "연무"
+                                    }
+                                    condition = condition_map.get(condition_code, condition_code)
+                                    
+                                    description_obj = weather_condition.get("description", {}) if isinstance(weather_condition, dict) else {}
+                                    description_text = description_obj.get("text", condition) if isinstance(description_obj, dict) else condition
+                                    
+                                    humidity = data.get("relativeHumidity", 0)
+                                    
+                                    wind_obj = data.get("wind", {})
+                                    if isinstance(wind_obj, dict):
+                                        wind_speed_obj = wind_obj.get("speed", {})
+                                        if isinstance(wind_speed_obj, dict):
+                                            wind_speed = wind_speed_obj.get("value", 0)
+                                        else:
+                                            wind_speed = wind_speed_obj if wind_speed_obj else 0
+                                    else:
+                                        wind_speed = 0
+                                    
+                                    icon_base_uri = weather_condition.get("iconBaseUri", "") if isinstance(weather_condition, dict) else ""
+                                    if icon_base_uri:
+                                        icon_url = f"{icon_base_uri}.png" if not icon_base_uri.endswith(('.png', '.jpg', '.svg')) else icon_base_uri
+                                    else:
+                                        icon_url = ""
+                                    
+                                    return {
+                                        "temperature": round(float(temp_celsius), 1) if temp_celsius else None,
+                                        "condition": condition,
+                                        "description": description_text,
+                                        "humidity": int(humidity) if humidity else None,
+                                        "wind_speed": round(float(wind_speed), 1) if wind_speed else None,
+                                        "icon": icon_url,
+                                        "icon_type": "google",
+                                        "date": target_date.strftime("%Y-%m-%d")
+                                    }
+                                else:
+                                    # GET 방식도 실패한 경우 에러 반환
+                                    error_text = await get_response.text()
+                                    error_data = {}
+                                    try:
+                                        if get_response.content_type == 'application/json':
+                                            error_data = await get_response.json()
+                                    except:
+                                        pass
+                                    
+                                    error_msg = ""
+                                    if isinstance(error_data, dict):
+                                        error_info = error_data.get('error', {})
+                                        if isinstance(error_info, dict):
+                                            error_msg = error_info.get('message', '')
+                                    
+                                    if not error_msg:
+                                        error_msg = error_text[:200] if error_text else f"HTTP {get_response.status}"
+                                    
+                                    print(f"❌ Google Weather API 호출 실패 (POST 및 GET 모두 실패)")
+                                    print(f"   URL: {url}")
+                                    print(f"   위도: {lat}, 경도: {lng}")
+                                    print(f"   POST 오류: HTTP {response.status}")
+                                    print(f"   GET 오류: HTTP {get_response.status} - {error_msg}")
+                                    
+                                    fallback = await fetch_openweather(session, target_date)
+                                    if fallback:
+                                        return fallback
+                                    return {
+                                        "temperature": None,
+                                        "condition": "정보 없음",
+                                        "description": f"날씨 정보를 가져올 수 없습니다. (HTTP {get_response.status}: {error_msg})",
+                                        "humidity": None,
+                                        "wind_speed": None,
+                                        "icon": None,
+                                        "icon_type": None,
+                                        "date": target_date.strftime("%Y-%m-%d")
+                                    }
+                except aiohttp.ClientError as e:
+                    error_msg = f"네트워크 오류: {str(e)}"
+                    print(f"❌ Google Weather API 네트워크 오류: {e}")
+                    print(f"   URL: {url}")
+                    print(f"   위도: {lat}, 경도: {lng}")
+                    fallback = await fetch_openweather(session, target_date)
+                    if fallback:
+                        return fallback
+                    return {
+                        "temperature": None,
+                        "condition": "정보 없음",
+                        "description": f"날씨 정보를 가져올 수 없습니다: {error_msg}",
+                        "humidity": None,
+                        "wind_speed": None,
+                        "icon": None,
+                        "icon_type": None,
+                        "date": target_date.strftime("%Y-%m-%d")
+                    }
         except Exception as e:
             print(f"⚠️ 날씨 정보 가져오기 오류: {e}")
             import traceback
             traceback.print_exc()
+            try:
+                async with aiohttp.ClientSession() as session:
+                    fallback = await fetch_openweather(session, target_date if "target_date" in locals() else datetime.now())
+                    if fallback:
+                        return fallback
+            except Exception:
+                pass
             return {
                 "temperature": None,
                 "condition": "정보 없음",
@@ -2053,97 +2365,6 @@ class GoogleMapsTool(BaseTool):
                 "date": date or datetime.now().strftime("%Y-%m-%d")
             }
     
-    async def _get_weather_openweathermap_fallback(
-        self,
-        lat: float,
-        lng: float,
-        target_date: datetime
-    ) -> Dict[str, Any]:
-        """
-        OpenWeatherMap API를 사용한 폴백 날씨 정보 조회
-        """
-        # OpenWeatherMap API 키가 별도로 있는 경우에만 시도
-        openweather_key = os.getenv("OPENWEATHER_API_KEY")
-        if not openweather_key:
-            return {
-                "temperature": None,
-                "condition": "정보 없음",
-                "description": "날씨 정보를 가져올 수 없습니다.",
-                "humidity": None,
-                "wind_speed": None,
-                "icon": None,
-                "icon_type": None,  # 아이콘 타입 필드 추가
-                "date": target_date.strftime("%Y-%m-%d")
-            }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = "https://api.openweathermap.org/data/2.5/weather"
-                params = {
-                    "lat": lat,
-                    "lon": lng,
-                    "appid": openweather_key,
-                    "units": "metric",
-                    "lang": "kr"
-                }
-                
-                async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        condition_map = {
-                            "clear sky": "맑음",
-                            "few clouds": "구름 조금",
-                            "scattered clouds": "구름 많음",
-                            "broken clouds": "구름 많음",
-                            "shower rain": "소나기",
-                            "rain": "비",
-                            "thunderstorm": "천둥번개",
-                            "snow": "눈",
-                            "mist": "안개",
-                            "fog": "안개",
-                            "haze": "연무"
-                        }
-                        
-                        weather_main = data.get("weather", [{}])[0].get("main", "").lower()
-                        weather_description = data.get("weather", [{}])[0].get("description", "")
-                        condition = condition_map.get(weather_main, weather_description)
-                        
-                        return {
-                            "temperature": round(data.get("main", {}).get("temp", 0), 1),
-                            "condition": condition,
-                            "description": weather_description,
-                            "humidity": data.get("main", {}).get("humidity", 0),
-                            "wind_speed": data.get("wind", {}).get("speed", 0),
-                            "icon": data.get("weather", [{}])[0].get("icon", ""),
-                            "icon_type": "openweathermap",  # 아이콘 타입 구분용
-                            "date": target_date.strftime("%Y-%m-%d")
-                        }
-                    else:
-                        error_text = await response.text()
-                        print(f"⚠️ OpenWeatherMap API 호출 실패: {response.status} - {error_text}")
-                        return {
-                            "temperature": None,
-                            "condition": "정보 없음",
-                            "description": "날씨 정보를 가져올 수 없습니다.",
-                            "humidity": None,
-                            "wind_speed": None,
-                            "icon": None,
-                            "icon_type": None,  # 아이콘 타입 필드 추가
-                            "date": target_date.strftime("%Y-%m-%d")
-                        }
-        except Exception as e:
-            print(f"⚠️ OpenWeatherMap 폴백 오류: {e}")
-            return {
-                "temperature": None,
-                "condition": "정보 없음",
-                "description": "날씨 정보를 가져올 수 없습니다.",
-                "humidity": None,
-                "wind_speed": None,
-                "icon": None,
-                "icon_type": None,  # 아이콘 타입 필드 추가
-                "date": target_date.strftime("%Y-%m-%d")
-            }
     
     async def get_weather_for_places(
         self,

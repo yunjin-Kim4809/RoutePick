@@ -383,7 +383,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (weather && weather.temperature !== null && weather.temperature !== undefined) {
                     // displayWeatherOnMap 함수가 script.js에 정의되어 있으므로 호출
                     if (typeof displayWeatherOnMap === 'function') {
-                        displayWeatherOnMap(weather);
+                        displayWeatherOnMap(weather, updatedCourse.visit_date);
                     }
                 }
             }

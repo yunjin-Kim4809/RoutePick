@@ -19,7 +19,7 @@ const Hero: React.FC<HeroProps> = ({ onPlanClick }) => {
 
   return (
     <>
-      <section className="relative w-full h-screen flex flex-col items-center justify-end pb-8 overflow-hidden bg-black">
+      <section className="relative w-full h-screen flex flex-col items-center justify-center overflow-hidden bg-black">
         {/* Unicorn Studio Canvas Layer - Full Opacity */}
         <div className="absolute inset-0 w-full h-full opacity-100">
           <div 
@@ -29,20 +29,22 @@ const Hero: React.FC<HeroProps> = ({ onPlanClick }) => {
         </div>
 
         {/* Overlay Content */}
-        <div className="relative z-20 text-center px-4 max-w-5xl mx-auto">
-          <div className="animate-fade-in-up delay-200 flex flex-col sm:flex-row items-center justify-center gap-4">
-            <button 
-                onClick={onPlanClick}
-                className="inline-flex items-center justify-center px-8 py-4 text-sm font-bold text-white transition-all duration-200 bg-black font-sans uppercase tracking-widest border border-white/20 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-900 bg-opacity-90 backdrop-blur-sm cursor-pointer"
-            >
-                Discover Your Route
-            </button>
-            <button 
-                onClick={() => setIsPlaceModalOpen(true)}
-                className="inline-flex items-center justify-center px-8 py-4 text-sm font-bold text-white transition-all duration-200 bg-black font-sans uppercase tracking-widest border border-white/20 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-900 bg-opacity-90 backdrop-blur-sm cursor-pointer"
-            >
-                Add Your Place
-            </button>
+        <div className="absolute inset-0 z-20 pointer-events-none">
+          <div className="absolute left-1/2 bottom-7 -translate-x-1/2 text-center px-4 max-w-5xl mx-auto pointer-events-auto">
+            <div className="animate-fade-in-up delay-200 flex flex-col items-center justify-center gap-4">
+              <button 
+                  onClick={onPlanClick}
+                  className="inline-flex items-center justify-center px-8 py-4 text-sm font-bold text-white transition-all duration-200 bg-black font-sans uppercase tracking-widest border border-white/20 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-900 bg-opacity-90 backdrop-blur-sm cursor-pointer"
+              >
+                  Discover Your Route
+              </button>
+              <button 
+                  onClick={() => setIsPlaceModalOpen(true)}
+                  className="inline-flex items-center justify-center px-8 py-4 text-sm font-bold text-white transition-all duration-200 bg-black font-sans uppercase tracking-widest border border-white/20 rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-900 bg-opacity-90 backdrop-blur-sm cursor-pointer"
+              >
+                  Add Your Place
+              </button>
+            </div>
           </div>
         </div>
       </section>

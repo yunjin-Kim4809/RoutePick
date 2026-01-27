@@ -16,14 +16,5 @@
     "category": "식당",
     "lat": 37.5642308,
     "lng": 126.9835303
-  },
-  {
-    "name": "죠죠 연남점",
-    "address": "대한민국 서울특별시 마포구 연남동 229-51",
-    "place_id": "ChIJ0TpBGgCZfDUR3aIWOEPbny4",
-    "rating": 4.9,
-    "category": "식당",
-    "lat": 37.5627533,
-    "lng": 126.9245801
   }
 ]
