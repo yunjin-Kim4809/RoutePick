@@ -366,7 +366,29 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // 경로 그리기
             if (validCoords.length > 1 && typeof window.drawActualRoute === 'function') {
-                await window.drawActualRoute(validCoords, validPlaces, updatedCourse);
+                const routePaths = await window.fetchRouteGuidePaths(window.TASK_ID);
+                const travelMode = window.getTravelModeFromTransportation
+                    ? window.getTravelModeFromTransportation(updatedCourse.transportation)
+                    : google.maps.TravelMode.WALKING;
+                const hasTransit = routePaths
+                    ? routePaths.some(segment =>
+                        (segment || []).some(step => (step.travel_mode || '').toUpperCase() === 'TRANSIT')
+                    )
+                    : false;
+                
+                if (travelMode === google.maps.TravelMode.TRANSIT || hasTransit) {
+                    if (routePaths && routePaths.length > 0 && typeof window.drawRouteFromServerData === 'function') {
+                        window.drawRouteFromServerData(routePaths);
+                    }
+                } else {
+                    const drew = await window.drawActualRoute(validCoords, validPlaces, updatedCourse, {
+                        travelMode,
+                        allowStraightFallback: false
+                    });
+                    if (!drew && routePaths && routePaths.length > 0 && typeof window.drawRouteFromServerData === 'function') {
+                        window.drawRouteFromServerData(routePaths);
+                    }
+                }
                 
                 // 화면 자동 맞춤
                 const bounds = new google.maps.LatLngBounds();

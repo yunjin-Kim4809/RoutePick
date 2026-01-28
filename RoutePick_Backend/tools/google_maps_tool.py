@@ -37,11 +37,10 @@ class GoogleMapsTool(BaseTool):
                 return "***"
             return f"{key[:4]}...{key[-4:]}"
         
-        # 후보 키 우선순위: google_maps_api_key > 환경변수 GOOGLE_MAPS_API_KEY > weather_api_key(구글형) > api_key
+        # 후보 키 우선순위: google_maps_api_key > 환경변수 GOOGLE_MAPS_API_KEY > api_key
         candidate_keys = [
             ("google_maps_api_key", self.config.get("google_maps_api_key")),
             ("env:GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY")),
-            ("weather_api_key", self.config.get("weather_api_key") or os.getenv("WEATHER_API_KEY") or os.getenv("OPENWEATHER_API_KEY")),
             ("api_key", self.config.get("api_key")),
         ]
         
@@ -54,8 +53,6 @@ class GoogleMapsTool(BaseTool):
                 continue
             if _looks_like_google_key(raw_key):
                 self.api_key = raw_key
-                if source == "weather_api_key":
-                    print("🔁 Weather API 키를 Google Maps 키로 사용합니다.")
                 break
             else:
                 # 구글 키가 아닌 경우는 무시하고 다음 후보로 진행
@@ -90,53 +87,104 @@ class GoogleMapsTool(BaseTool):
         self._max_retries = 3
         self._retry_delay = 1.0  # 초
         
-        def _looks_like_google_key(key: Optional[str]) -> bool:
-            return isinstance(key, str) and key.startswith("AIza")
+        # Distance Matrix API 요청 청크 크기 (요소 100개 제한 회피)
+        # origins * destinations <= 100 을 보장하기 위해 10으로 제한
+        self._distance_matrix_chunk_size = 10
         
-        # Weather API 설정 (OpenWeather 우선)
-        # Google Weather API는 Google Maps API 키를 사용할 수 있습니다
-        self.weather_api_key = (
-            self.config.get("weather_api_key") or 
-            self.config.get("google_maps_api_key") or  # Google Maps API 키도 사용 가능
-            os.getenv("WEATHER_API_KEY") or 
-            os.getenv("GOOGLE_MAPS_API_KEY")  # Google Maps API 키도 사용 가능
-        )
-        # API 키 정리 (앞뒤 공백 제거)
-        if self.weather_api_key:
-            self.weather_api_key = str(self.weather_api_key).strip()
-            if not self.weather_api_key:
-                self.weather_api_key = None
+        # 호환성용 플래그 (한국 제한 파라미터는 제거됨)
+        self._enforce_korea_bounds = False
         
-        # OpenWeatherMap 키 (우선 사용)
+        # Weather API 설정 (OpenWeather만 사용)
         raw_openweather = (
-            self.config.get("openweather_api_key") or 
-            os.getenv("OPENWEATHER_API_KEY") or 
+            self.config.get("openweather_api_key") or
+            os.getenv("OPENWEATHER_API_KEY") or
             os.getenv("WEATHER_API_KEY")
         )
-        if raw_openweather and not _looks_like_google_key(raw_openweather):
-            self.openweather_api_key = str(raw_openweather).strip()
-        else:
+        self.openweather_api_key = str(raw_openweather).strip() if raw_openweather else None
+        if self.openweather_api_key and not self.openweather_api_key.strip():
             self.openweather_api_key = None
         
-        # Google Weather API 엔드포인트
-        self.weather_api_url = self.config.get("weather_api_url", "https://weather.googleapis.com/v1/currentConditions:lookup")
-        self.use_google_weather = False  # 기본은 OpenWeather 사용
+        # 하위 호환용 필드 (기존 코드에서 weather_api_key 접근 가능)
+        self.weather_api_key = self.openweather_api_key
         
-        if self.weather_api_key:
-            api_key_preview = f"{self.weather_api_key[:6]}...{self.weather_api_key[-4:]}" if len(self.weather_api_key) > 12 else "***"
-            print(f"🌤️ Weather API 키 로드됨: {api_key_preview} (Google Weather API 사용)")
+        if self.openweather_api_key:
+            api_key_preview = f"{self.openweather_api_key[:6]}...{self.openweather_api_key[-4:]}" if len(self.openweather_api_key) > 12 else "***"
+            print(f"🌤️ OpenWeather API 키 로드됨: {api_key_preview}")
         else:
-            print("⚠️ Weather API 키가 설정되지 않았습니다. 날씨 정보를 가져올 수 없습니다.")
-            print(f"   - config['weather_api_key']: {_mask_key(self.config.get('weather_api_key'))}")
-            print(f"   - config['google_maps_api_key']: {_mask_key(self.config.get('google_maps_api_key'))}")
+            print("⚠️ OpenWeather API 키가 설정되지 않았습니다. 날씨 정보를 가져올 수 없습니다.")
+            print(f"   - config['openweather_api_key']: {_mask_key(self.config.get('openweather_api_key'))}")
+            print(f"   - 환경변수 OPENWEATHER_API_KEY: {_mask_key(os.getenv('OPENWEATHER_API_KEY'))}")
             print(f"   - 환경변수 WEATHER_API_KEY: {_mask_key(os.getenv('WEATHER_API_KEY'))}")
-            print(f"   - 환경변수 GOOGLE_MAPS_API_KEY: {_mask_key(os.getenv('GOOGLE_MAPS_API_KEY'))}")
     
     def _clean_html_tags(self, text: str) -> str:
         """HTML 태그 제거"""
         if not text:
             return ""
         return re.sub(r'<[^>]+>', '', text)
+    
+    def _normalize_address_for_geocode(self, address: str) -> str:
+        """지오코딩 입력 정규화"""
+        if not address:
+            return ""
+        normalized = re.sub(r"\s+", " ", str(address)).strip()
+        return normalized
+
+    def _log_directions_failure(
+        self,
+        origin: str,
+        destination: str,
+        mode: str,
+        error: Optional[Exception] = None,
+        response: Optional[Any] = None
+    ) -> None:
+        """
+        Directions API 실패 원인 로깅
+        
+        NOTE:
+            - 과도한 터미널 출력으로 인한 노이즈를 줄이기 위해
+              현재는 내부에서만 상태를 정리하고 아무 것도 출력하지 않습니다.
+            - 추후 필요하면 이 함수에서 로깅/모니터링 시스템으로만 전송하도록 확장하세요.
+        """
+        status = None
+        error_message = None
+        
+        # 응답이 딕셔너리인 경우
+        if isinstance(response, dict):
+            status = response.get("status")
+            error_message = response.get("error_message")
+        # 응답이 리스트인 경우
+        elif isinstance(response, list):
+            if len(response) == 0:
+                status = "EMPTY_RESPONSE"
+                error_message = "응답이 빈 리스트입니다"
+            else:
+                first = response[0]
+                if isinstance(first, dict):
+                    status = first.get("status")
+                    error_message = first.get("error_message")
+        # 응답이 None인 경우
+        elif response is None:
+            status = "NO_RESPONSE"
+            error_message = "응답이 None입니다"
+        
+        # 예외 객체에서 status 추출 시도
+        err_text = None
+        if error:
+            err_text = str(error)
+            # googlemaps 라이브러리 예외에서 status 추출 시도
+            if hasattr(error, 'status'):
+                status = error.status
+            if hasattr(error, 'error_message'):
+                error_message = error.error_message
+            # 예외 메시지에서 status 패턴 찾기
+            if not status and err_text:
+                import re
+                status_match = re.search(r'status[:\s]+([A-Z_]+)', err_text, re.IGNORECASE)
+                if status_match:
+                    status = status_match.group(1)
+        
+        # 현재는 터미널에 아무 것도 출력하지 않는다.
+        # (필요 시 이곳에서 파일/외부 로깅 시스템으로만 전송하도록 변경 가능)
     
     def _decode_polyline(self, encoded: str) -> List[Dict[str, float]]:
         """
@@ -549,36 +597,45 @@ class GoogleMapsTool(BaseTool):
         Returns:
             (lat, lng) 튜플 또는 None
         """
+        normalized_address = self._normalize_address_for_geocode(address)
+        if not normalized_address:
+            return None
+        
         # 캐시 확인
-        if address in self._geocoding_cache:
-            return self._geocoding_cache[address]
+        if normalized_address in self._geocoding_cache:
+            return self._geocoding_cache[normalized_address]
         
         if not self.client:
             return None
         
         loop = asyncio.get_event_loop()
         try:
-            # 동기 함수를 비동기로 실행
-            geocode_result = await loop.run_in_executor(
-                None,
-                self.client.geocode,
-                address
-            )
-            if geocode_result:
+            # 지오코딩 요청 후보 구성 (한국 한정 파라미터 제거)
+            requests = [{"address": normalized_address}]
+            
+            for req in requests:
+                def call_geocode():
+                    return self.client.geocode(**req)
+                
+                geocode_result = await loop.run_in_executor(None, call_geocode)
+                if not geocode_result:
+                    continue
+                
                 loc = geocode_result[0]["geometry"]["location"]
                 coord = (loc["lat"], loc["lng"])
+                
                 # 캐시에 저장
-                self._geocoding_cache[address] = coord
+                self._geocoding_cache[normalized_address] = coord
                 return coord
         except Exception as e:
             error_msg = str(e)
             # API 키 관련 에러인지 확인
             if "API key" in error_msg or "INVALID_REQUEST" in error_msg or "REQUEST_DENIED" in error_msg:
-                print(f"❌ Geocoding API 키 오류: {address}")
+                print(f"❌ Geocoding API 키 오류: {normalized_address}")
                 print(f"   에러 상세: {error_msg}")
                 print(f"   API 키 확인 필요: {self.api_key[:10] if self.api_key and len(self.api_key) > 10 else 'N/A'}...")
             else:
-                print(f"⚠️  Geocoding 실패: {address} - {e}")
+                print(f"⚠️  Geocoding 실패: {normalized_address} - {e}")
         
         return None
     
@@ -600,7 +657,9 @@ class GoogleMapsTool(BaseTool):
             coords = place.get("coordinates")
             if coords and coords.get("lat") and coords.get("lng"):
                 # 좌표가 이미 있는 경우
-                coordinates.append((float(coords.get("lat")), float(coords.get("lng"))))
+                lat_val = float(coords.get("lat"))
+                lng_val = float(coords.get("lng"))
+                coordinates.append((lat_val, lng_val))
                 geocode_tasks.append(None)  # None은 이미 좌표가 있음을 의미
             else:
                 # 주소를 좌표로 변환 (Geocoding API 사용)
@@ -970,82 +1029,68 @@ class GoogleMapsTool(BaseTool):
             return None
         
         try:
-            # 모든 좌표를 문자열로 변환
-            all_coords = []
+            # 좌표를 문자열로 변환
+            coord_strings = [f"{coord[0]},{coord[1]}" for coord in coordinates]
             
-            # 출발지 추가
-            if origin_coords:
-                all_coords.append(f"{origin_coords[0]},{origin_coords[1]}")
-            
-            # 경유지 추가
-            for coord in coordinates:
-                all_coords.append(f"{coord[0]},{coord[1]}")
-            
-            # 도착지 추가
-            if dest_coords:
-                all_coords.append(f"{dest_coords[0]},{dest_coords[1]}")
-            
-            # Distance Matrix API 호출 (최대 25개 지점 지원)
-            if len(all_coords) > 25:
-                # 25개 초과 시 첫 25개만 사용
-                all_coords = all_coords[:25]
-            
-            loop = asyncio.get_event_loop()
-            distance_matrix = await loop.run_in_executor(
-                None,
-                lambda: self.client.distance_matrix(
-                    origins=all_coords,
-                    destinations=all_coords,
-                    mode=mode
-                )
-            )
-            
-            if not distance_matrix or distance_matrix.get("status") != "OK":
-                return None
-            
-            rows = distance_matrix.get("rows", [])
-            if not rows:
-                return None
-            
-            # 거리/시간 행렬 구성
+            # 거리/시간 행렬 구성 (청크 호출)
             distance_matrix_data = {}
             duration_matrix_data = {}
+            chunk_size = max(1, int(self._distance_matrix_chunk_size))
             
-            origin_offset = 1 if origin_coords else 0
-            
-            for i, row in enumerate(rows):
-                elements = row.get("elements", [])
-                for j, element in enumerate(elements):
-                    if element.get("status") == "OK":
-                        distance = element.get("distance", {}).get("value", float('inf'))
-                        duration = element.get("duration", {}).get("value", float('inf'))
-                        
-                        # 출발지/도착지 인덱스 조정
-                        from_idx = i - origin_offset
-                        to_idx = j - origin_offset
-                        
-                        # 경유지 인덱스만 저장 (0 이상이고 coordinates 길이 미만)
-                        if from_idx >= 0 and from_idx < len(coordinates) and \
-                           to_idx >= 0 and to_idx < len(coordinates):
-                            distance_matrix_data[(from_idx, to_idx)] = distance
-                            duration_matrix_data[(from_idx, to_idx)] = duration
+            for i in range(0, len(coord_strings), chunk_size):
+                origins_chunk = coord_strings[i:i + chunk_size]
+                for j in range(0, len(coord_strings), chunk_size):
+                    destinations_chunk = coord_strings[j:j + chunk_size]
+                    
+                    distance_matrix = await self._fetch_distance_matrix_chunk(
+                        origins_chunk, destinations_chunk, mode
+                    )
+                    
+                    if not distance_matrix or distance_matrix.get("status") != "OK":
+                        continue
+                    
+                    rows = distance_matrix.get("rows", [])
+                    for row_idx, row in enumerate(rows):
+                        elements = row.get("elements", [])
+                        for col_idx, element in enumerate(elements):
+                            if element.get("status") != "OK":
+                                continue
+                            distance = element.get("distance", {}).get("value", float('inf'))
+                            duration = element.get("duration", {}).get("value", float('inf'))
+                            
+                            from_idx = i + row_idx
+                            to_idx = j + col_idx
+                            if 0 <= from_idx < len(coordinates) and 0 <= to_idx < len(coordinates):
+                                distance_matrix_data[(from_idx, to_idx)] = distance
+                                duration_matrix_data[(from_idx, to_idx)] = duration
             
             # 출발지 결정
             start_idx = 0
             if origin_coords:
                 # 출발지에서 가장 가까운 경유지 찾기
                 min_duration = float('inf')
-                origin_row_idx = 0  # 출발지는 첫 번째 행
-                if origin_row_idx < len(rows):
-                    elements = rows[origin_row_idx].get("elements", [])
-                    for j, element in enumerate(elements):
-                        if element.get("status") == "OK":
-                            to_idx = j - origin_offset
-                            if to_idx >= 0 and to_idx < len(coordinates):
-                                duration = element.get("duration", {}).get("value", float('inf'))
-                                if duration < min_duration:
-                                    min_duration = duration
-                                    start_idx = to_idx
+                origin_str = f"{origin_coords[0]},{origin_coords[1]}"
+                chunk_size = max(1, int(self._distance_matrix_chunk_size))
+                for j in range(0, len(coord_strings), chunk_size):
+                    destinations_chunk = coord_strings[j:j + chunk_size]
+                    origin_matrix = await self._fetch_distance_matrix_chunk(
+                        [origin_str], destinations_chunk, mode
+                    )
+                    if not origin_matrix or origin_matrix.get("status") != "OK":
+                        continue
+                    rows = origin_matrix.get("rows", [])
+                    if not rows:
+                        continue
+                    elements = rows[0].get("elements", [])
+                    for col_idx, element in enumerate(elements):
+                        if element.get("status") != "OK":
+                            continue
+                        to_idx = j + col_idx
+                        if 0 <= to_idx < len(coordinates):
+                            duration = element.get("duration", {}).get("value", float('inf'))
+                            if duration < min_duration:
+                                min_duration = duration
+                                start_idx = to_idx
             
             # Nearest Neighbor 알고리즘 (실제 거리/시간 기반)
             unvisited = set(range(len(coordinates)))
@@ -1262,127 +1307,81 @@ class GoogleMapsTool(BaseTool):
             return None
         
         try:
-            # 출발지와 도착지 좌표 결정
-            origin_coords = None
-            dest_coords = None
-            
-            if origin:
-                if origin.get("coordinates"):
-                    origin_coords = (origin["coordinates"]["lat"], origin["coordinates"]["lng"])
-                elif origin.get("address"):
-                    loop = asyncio.get_event_loop()
-                    geocode_result = await loop.run_in_executor(
-                        None,
-                        self.client.geocode,
-                        origin["address"]
-                    )
-                    if geocode_result:
-                        location = geocode_result[0]["geometry"]["location"]
-                        origin_coords = (location["lat"], location["lng"])
-            
-            if destination:
-                if destination.get("coordinates"):
-                    dest_coords = (destination["coordinates"]["lat"], destination["coordinates"]["lng"])
-                elif destination.get("address"):
-                    loop = asyncio.get_event_loop()
-                    geocode_result = await loop.run_in_executor(
-                        None,
-                        self.client.geocode,
-                        destination["address"]
-                    )
-                    if geocode_result:
-                        location = geocode_result[0]["geometry"]["location"]
-                        dest_coords = (location["lat"], location["lng"])
-            
-            # 출발지와 도착지 좌표 결정 (없으면 첫 번째/마지막 좌표 사용)
-            if not origin_coords:
-                origin_coords = coordinates[0] if coordinates else None
-            
-            if not dest_coords and len(coordinates) > 0:
-                dest_coords = coordinates[-1]
-            
-            # 모든 좌표를 문자열로 변환 (origin + waypoints + destination)
-            all_coords = []
-            coord_indices = []  # 각 좌표가 원본 coordinates의 어떤 인덱스인지 추적
-            
-            # 출발지 추가
-            if origin_coords:
-                all_coords.append(f"{origin_coords[0]},{origin_coords[1]}")
-                coord_indices.append(-1)  # -1은 origin을 의미
-            
-            # 경유지 추가
-            for idx, coord in enumerate(coordinates):
-                # origin/destination과 같은 좌표인지 확인
-                is_origin = origin_coords and abs(coord[0] - origin_coords[0]) < 0.0001 and abs(coord[1] - origin_coords[1]) < 0.0001
-                is_dest = dest_coords and abs(coord[0] - dest_coords[0]) < 0.0001 and abs(coord[1] - dest_coords[1]) < 0.0001
-                
-                if not is_origin and not is_dest:
-                    all_coords.append(f"{coord[0]},{coord[1]}")
-                    coord_indices.append(idx)
-            
-            # 도착지 추가
-            if dest_coords:
-                all_coords.append(f"{dest_coords[0]},{dest_coords[1]}")
-                coord_indices.append(-2)  # -2는 destination을 의미
-            
-            # Distance Matrix API 호출 (최대 25개 지점 지원)
-            if len(all_coords) > 25:
-                print(f"⚠️  좌표가 25개를 초과하여 첫 25개만 사용합니다. (총 {len(all_coords)}개)")
-                all_coords = all_coords[:25]
-                coord_indices = coord_indices[:25]
-            
-            if len(all_coords) < 2:
-                return None
-            
             # 현재 시간 또는 여행 시작 시간을 departure_time으로 설정
             # 대중교통은 시간에 따라 소요 시간이 달라지므로 현재 시간 기준으로 계산
             import datetime
             departure_time = datetime.datetime.now()
-            
-            loop = asyncio.get_event_loop()
-            distance_matrix = await loop.run_in_executor(
-                None,
-                lambda: self.client.distance_matrix(
-                    origins=all_coords,
-                    destinations=all_coords,
-                    mode='transit',
-                    departure_time=departure_time
-                )
-            )
-            
-            if not distance_matrix or distance_matrix.get("status") != "OK":
-                print(f"⚠️  Distance Matrix API 호출 실패: {distance_matrix.get('status', 'UNKNOWN')}")
+
+            # 모든 좌표를 문자열로 변환 (coordinates 기준)
+            coord_strings = [f"{coord[0]},{coord[1]}" for coord in coordinates]
+            if len(coord_strings) < 2:
                 return None
             
-            rows = distance_matrix.get("rows", [])
-            if not rows:
-                return None
-            
-            # 소요 시간 행렬 구성 (경유지 간만 저장)
+            # 소요 시간 행렬 구성 (청크 호출)
             duration_matrix = {}
+            chunk_size = max(1, int(self._distance_matrix_chunk_size))
             
-            for i, row in enumerate(rows):
-                elements = row.get("elements", [])
-                from_idx = coord_indices[i] if i < len(coord_indices) else None
-                
-                # origin이나 destination은 제외 (경유지 간만 저장)
-                if from_idx is None or from_idx < 0:
-                    continue
-                
-                for j, element in enumerate(elements):
-                    if element.get("status") == "OK":
-                        to_idx = coord_indices[j] if j < len(coord_indices) else None
-                        
-                        # 경유지 간만 저장 (origin/destination 제외)
-                        if to_idx is not None and to_idx >= 0:
+            for i in range(0, len(coord_strings), chunk_size):
+                origins_chunk = coord_strings[i:i + chunk_size]
+                for j in range(0, len(coord_strings), chunk_size):
+                    destinations_chunk = coord_strings[j:j + chunk_size]
+                    
+                    distance_matrix = await self._fetch_distance_matrix_chunk(
+                        origins_chunk, destinations_chunk, 'transit', departure_time=departure_time
+                    )
+                    
+                    if not distance_matrix or distance_matrix.get("status") != "OK":
+                        continue
+                    
+                    rows = distance_matrix.get("rows", [])
+                    for row_idx, row in enumerate(rows):
+                        elements = row.get("elements", [])
+                        for col_idx, element in enumerate(elements):
+                            if element.get("status") != "OK":
+                                continue
                             duration = element.get("duration", {}).get("value", float('inf'))
-                            if duration != float('inf'):
+                            if duration == float('inf'):
+                                continue
+                            from_idx = i + row_idx
+                            to_idx = j + col_idx
+                            if 0 <= from_idx < len(coordinates) and 0 <= to_idx < len(coordinates):
                                 duration_matrix[(from_idx, to_idx)] = int(duration)
             
             return duration_matrix if duration_matrix else None
             
         except Exception as e:
             print(f"⚠️  Transit duration matrix 구축 중 오류: {e}")
+            return None
+
+    async def _fetch_distance_matrix_chunk(
+        self,
+        origins: List[str],
+        destinations: List[str],
+        mode: str,
+        departure_time: Optional[datetime] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Distance Matrix API를 청크 단위로 호출
+        """
+        if not self.client or not origins or not destinations:
+            return None
+        
+        loop = asyncio.get_event_loop()
+        
+        def call_distance_matrix():
+            params = {
+                "origins": origins,
+                "destinations": destinations,
+                "mode": mode
+            }
+            if departure_time is not None:
+                params["departure_time"] = departure_time
+            return self.client.distance_matrix(**params)
+        
+        try:
+            return await loop.run_in_executor(None, call_distance_matrix)
+        except Exception as e:
+            print(f"⚠️  Distance Matrix API 청크 호출 실패: {e}")
             return None
     
     def _solve_tsp_locally(
@@ -1638,13 +1637,36 @@ class GoogleMapsTool(BaseTool):
         # 첫 번째 우선 교통수단 사용
         primary_mode = modes_to_try[0] if modes_to_try else 'walking'
         
-        # Google Maps API 제약 사항: 대중교통(transit) 모드는 경유지(waypoints)를 지원하지 않음
-        # 경유지가 있고 대중교통 모드인 경우, 즉시 폴백(구간별 계산)으로 이동
-        if waypoints and primary_mode == 'transit':
-            print(f"  ℹ️ 대중교통 모드에서는 경유지를 사용할 수 없으므로 구간별로 계산합니다.")
+        # Google Maps API 제약사항:
+        # 1. 도보/자동차 모드: waypoints 사용 시 빈 응답 반환 가능 → 구간별 요청
+        # 2. 대중교통 모드: waypoints를 지원하지 않음 → 구간별 요청
+        # 3. Waypoints가 10개 초과: API 제한 → 구간별 요청
+        
+        use_segment_by_segment = False
+        reason = ""
+        
+        if primary_mode in ['walking', 'driving']:
+            use_segment_by_segment = True
+            reason = f"{primary_mode} 모드는 waypoints 제약으로 인해"
+        elif primary_mode == 'transit' and waypoints:
+            use_segment_by_segment = True
+            reason = "대중교통 모드는 waypoints를 지원하지 않아"
+        elif waypoints and len(waypoints) > 10:
+            use_segment_by_segment = True
+            reason = f"waypoints가 {len(waypoints)}개로 너무 많아 (제한: 10개)"
+        
+        if use_segment_by_segment:
+            print(f"  ℹ️ {reason} 구간별로 계산합니다.")
             return await self._calculate_directions(places, origin, destination, mode, preferred_modes, user_transportation)
-
+        
+        # Waypoints가 있고, 대중교통이 아니고, 10개 이하인 경우만 일괄 요청 시도
+        # (실제로는 이 경우가 거의 없지만, 혹시 모를 경우를 대비)
         loop = asyncio.get_event_loop()
+        # Directions API에는 문자열이 아닌 (lat, lng) 튜플을 그대로 전달하여
+        # 좌표가 문자열 포맷 과정에서 잘리는 일을 방지한다.
+        origin_tuple = (origin_coord[0], origin_coord[1])
+        dest_tuple = (dest_coord[0], dest_coord[1])
+        # 로깅용 문자열은 따로 생성 (좌표 자체는 위 튜플을 그대로 사용)
         origin_str = f"{origin_coord[0]},{origin_coord[1]}"
         dest_str = f"{dest_coord[0]},{dest_coord[1]}"
         
@@ -1653,8 +1675,8 @@ class GoogleMapsTool(BaseTool):
                 def call_directions():
                     if waypoints:
                         return self.client.directions(
-                            origin=origin_str,
-                            destination=dest_str,
+                            origin=origin_tuple,
+                            destination=dest_tuple,
                             waypoints=waypoints,
                             optimize_waypoints=False,  # 이미 최적화되어 있으므로 False
                             mode=primary_mode,
@@ -1662,8 +1684,8 @@ class GoogleMapsTool(BaseTool):
                         )
                     else:
                         return self.client.directions(
-                            origin=origin_str,
-                            destination=dest_str,
+                            origin=origin_tuple,
+                            destination=dest_tuple,
                             mode=primary_mode,
                             language='ko'  # 한국어 설정
                         )
@@ -1746,6 +1768,7 @@ class GoogleMapsTool(BaseTool):
                         return directions, total_duration, total_distance
                 
                 # API 응답이 비어있는 경우 폴백으로 개별 구간 계산
+                self._log_directions_failure(origin_str, dest_str, primary_mode, response=directions_result)
                 break
                 
             except Exception as e:
@@ -1753,7 +1776,8 @@ class GoogleMapsTool(BaseTool):
                     await asyncio.sleep(self._retry_delay * (attempt + 1))  # 지수 백오프
                     continue
                 else:
-                    print(f"⚠️  Directions API 호출 실패 (재시도 {self._max_retries}회): {e}")
+                    # 마지막 재시도 실패 시 상세 로깅
+                    self._log_directions_failure(origin_str, dest_str, primary_mode, error=e)
                     # 폴백: 개별 구간별 계산
                     break
         
@@ -1858,6 +1882,8 @@ class GoogleMapsTool(BaseTool):
             if not modes_to_try:
                 modes_to_try = ['walking', 'transit', 'driving']
             
+            last_error = None
+            
             # Google Maps Client가 없으면 즉시 오류 반환
             if not self.client:
                 return {
@@ -1876,8 +1902,7 @@ class GoogleMapsTool(BaseTool):
                     "error": "Google Maps Client가 초기화되지 않았습니다."
                 }
 
-            last_error = None
-            # 각 교통수단을 우선순위대로 시도
+            # 각 교통수단을 우선순위대로 시도 (구글 API)
             for try_mode in modes_to_try:
                 for attempt in range(self._max_retries):
                     try:
@@ -1952,8 +1977,56 @@ class GoogleMapsTool(BaseTool):
                                     }
                                 }
                         
-                        # 이 모드로 경로를 찾지 못했으면 다음 모드 시도
+                        # 이 모드로 경로를 찾지 못했으면 직선 거리로 폴백 시도
+                        # 매우 가까운 거리일 때는 직선 경로로 처리
+                        import math
+                        R = 6371000  # 지구 반지름 (미터)
+                        lat1, lon1 = from_coord[0], from_coord[1]
+                        lat2, lon2 = to_coord[0], to_coord[1]
+                        phi1 = math.radians(lat1)
+                        phi2 = math.radians(lat2)
+                        delta_phi = math.radians(lat2 - lat1)
+                        delta_lambda = math.radians(lon2 - lon1)
+                        a = math.sin(delta_phi / 2) ** 2 + \
+                            math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+                        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                        straight_distance = R * c  # 미터 단위
+                        
+                        # 500m 이내이면 직선 경로로 처리 (walking 모드일 때만)
+                        if straight_distance <= 500 and try_mode == 'walking':
+                            # 도보 속도: 약 4km/h = 1.11m/s
+                            walking_speed = 1.11  # m/s
+                            estimated_duration = int(straight_distance / walking_speed)  # 초
+                            
+                            print(f"  ℹ️ 매우 가까운 거리({straight_distance:.0f}m)로 직선 경로 사용: {from_place.get('name')} → {to_place.get('name')}")
+                            
+                            return {
+                                "from": from_place.get("name", "Unknown"),
+                                "to": to_place.get("name", "Unknown"),
+                                "from_address": from_place.get("address", ""),
+                                "to_address": to_place.get("address", ""),
+                                "duration": estimated_duration,
+                                "distance": int(straight_distance),
+                                "duration_text": f"{estimated_duration // 60}분" if estimated_duration >= 60 else f"{estimated_duration}초",
+                                "distance_text": f"{straight_distance:.0f}m" if straight_distance < 1000 else f"{straight_distance / 1000:.1f}km",
+                                "steps": [{
+                                    "instruction": f"직선 경로로 이동 ({straight_distance:.0f}m)",
+                                    "distance": {"value": int(straight_distance), "text": f"{straight_distance:.0f}m" if straight_distance < 1000 else f"{straight_distance / 1000:.1f}km"},
+                                    "duration": {"value": estimated_duration, "text": f"{estimated_duration // 60}분" if estimated_duration >= 60 else f"{estimated_duration}초"},
+                                    "path": [
+                                        {"lat": lat1, "lng": lon1},
+                                        {"lat": lat2, "lng": lon2}
+                                    ]
+                                }],
+                                "mode": try_mode,
+                                "start_location": {"lat": lat1, "lng": lon1},
+                                "end_location": {"lat": lat2, "lng": lon2},
+                                "is_fallback": True
+                            }
+                        
+                        # 직선 폴백이 적용되지 않으면 다음 모드 시도
                         last_error = "Directions API 응답이 비어있습니다."
+                        self._log_directions_failure(origin_str, dest_str, try_mode, response=directions_result)
                         break
                     
                     except Exception as e:
@@ -1962,6 +2035,7 @@ class GoogleMapsTool(BaseTool):
                             await asyncio.sleep(self._retry_delay * (attempt + 1))
                             continue
                         # 이 모드로 실패했으면 다음 모드 시도
+                        self._log_directions_failure(origin_str, dest_str, try_mode, error=e)
                         break
                 # 현재 모드 실패 → 다음 모드 시도
                 continue
@@ -2039,8 +2113,8 @@ class GoogleMapsTool(BaseTool):
                 "date": str  # 날짜
             }
         """
-        if not self.weather_api_key:
-            print("⚠️ Weather API 키가 설정되지 않았습니다.")
+        if not self.openweather_api_key:
+            print("⚠️ OpenWeather API 키가 설정되지 않았습니다.")
             return {
                 "temperature": None,
                 "condition": "정보 없음",
@@ -2051,11 +2125,8 @@ class GoogleMapsTool(BaseTool):
                 "icon_type": None,  # 아이콘 타입 필드 추가
                 "date": date or datetime.now().strftime("%Y-%m-%d")
             }
-        
+
         async def fetch_openweather(session: aiohttp.ClientSession, target_date: datetime) -> Optional[Dict[str, Any]]:
-            if not self.openweather_api_key:
-                return None
-            
             try:
                 url = "https://api.openweathermap.org/data/2.5/weather"
                 params = {
@@ -2069,7 +2140,7 @@ class GoogleMapsTool(BaseTool):
                     if response.status != 200:
                         return None
                     data = await response.json()
-                    
+
                     weather_list = data.get("weather", []) or []
                     first_weather = weather_list[0] if weather_list else {}
                     temp = (data.get("main", {}) or {}).get("temp")
@@ -2078,7 +2149,7 @@ class GoogleMapsTool(BaseTool):
                     description = first_weather.get("description", "")
                     condition = first_weather.get("main", "")
                     icon = first_weather.get("icon", "")
-                    
+
                     return {
                         "temperature": round(float(temp), 1) if temp is not None else None,
                         "condition": condition or "정보 없음",
@@ -2091,277 +2162,60 @@ class GoogleMapsTool(BaseTool):
                     }
             except Exception:
                 return None
-        
+
         try:
+            if lat is None or lng is None:
+                error_msg = f"위도/경도 값이 없습니다. lat={lat}, lng={lng}"
+                print(f"❌ {error_msg}")
+                return {
+                    "temperature": None,
+                    "condition": "정보 없음",
+                    "description": f"날씨 정보를 가져올 수 없습니다: {error_msg}",
+                    "humidity": None,
+                    "wind_speed": None,
+                    "icon": None,
+                    "icon_type": None,
+                    "date": date or datetime.now().strftime("%Y-%m-%d")
+                }
+
             # 날짜 파싱
             if date:
                 try:
                     target_date = datetime.strptime(date, "%Y-%m-%d")
                 except:
-                    # 다른 형식 시도
                     try:
                         target_date = datetime.strptime(date.split()[0], "%Y-%m-%d")
                     except:
                         target_date = datetime.now()
             else:
                 target_date = datetime.now()
-            
-            # OpenWeather 우선 호출
-            async with aiohttp.ClientSession() as session:
-                if self.openweather_api_key:
-                    fallback = await fetch_openweather(session, target_date)
-                    if fallback:
-                        return fallback
 
-                # OpenWeather 실패 시 Google Weather 시도
-                url = self.weather_api_url
-                
-                # 위도/경도 값 검증
-                if lat is None or lng is None:
-                    error_msg = f"위도/경도 값이 없습니다. lat={lat}, lng={lng}"
-                    print(f"❌ {error_msg}")
-                    return {
-                        "temperature": None,
-                        "condition": "정보 없음",
-                        "description": f"날씨 정보를 가져올 수 없습니다: {error_msg}",
-                        "humidity": None,
-                        "wind_speed": None,
-                        "icon": None,
-                        "icon_type": None,
-                        "date": target_date.strftime("%Y-%m-%d")
-                    }
-                
-                # Google Weather API 호출 (POST 방식 우선, 실패 시 GET 방식 시도)
-                # 요청 본문에 location 정보 포함
-                post_data = {
-                    "location": {
-                        "latitude": float(lat),
-                        "longitude": float(lng)
-                    },
-                    "units": "METRIC"
-                }
-                
-                # API 키를 URL 파라미터로 추가
-                url_with_key = f"{url}?key={self.weather_api_key}"
-                
-                headers = {
-                    "Content-Type": "application/json"
-                }
-                
-                # GET 방식 파라미터 (POST 실패 시 사용)
-                get_params = {
-                    "key": self.weather_api_key,
-                    "location.latitude": float(lat),
-                    "location.longitude": float(lng),
-                    "units_system": "METRIC"
-                }
-                
-                try:
-                    # 먼저 POST 방식으로 시도
-                    async with session.post(url_with_key, json=post_data, headers=headers) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            
-                            # Google Weather API 응답 파싱
-                            # 온도 (섭씨) - temperature 객체에서 degrees 추출
-                            temperature_obj = data.get("temperature", {})
-                            if isinstance(temperature_obj, dict):
-                                temp_celsius = temperature_obj.get("degrees", 0)
-                            else:
-                                temp_celsius = temperature_obj if temperature_obj else 0
-                            
-                            # 날씨 조건 - weatherCondition 객체에서 type 추출
-                            weather_condition = data.get("weatherCondition", {})
-                            condition_code = weather_condition.get("type", "") if isinstance(weather_condition, dict) else ""
-                            
-                            # Google Weather API 조건 코드를 한국어로 매핑
-                            condition_map = {
-                                "CLEAR": "맑음",
-                                "PARTLY_CLOUDY": "구름 조금",
-                                "MOSTLY_CLOUDY": "구름 많음",
-                                "CLOUDY": "흐림",
-                                "RAIN": "비",
-                                "SHOWERS": "소나기",
-                                "THUNDERSTORMS": "천둥번개",
-                                "SNOW": "눈",
-                                "FOG": "안개",
-                                "HAZE": "연무"
-                            }
-                            condition = condition_map.get(condition_code, condition_code)
-                            
-                            # 날씨 설명
-                            description_obj = weather_condition.get("description", {}) if isinstance(weather_condition, dict) else {}
-                            description_text = description_obj.get("text", condition) if isinstance(description_obj, dict) else condition
-                            
-                            # 습도 - relativeHumidity는 숫자로 직접 제공
-                            humidity = data.get("relativeHumidity", 0)
-                            
-                            # 풍속 - wind 객체에서 speed 추출
-                            wind_obj = data.get("wind", {})
-                            if isinstance(wind_obj, dict):
-                                wind_speed_obj = wind_obj.get("speed", {})
-                                if isinstance(wind_speed_obj, dict):
-                                    wind_speed = wind_speed_obj.get("value", 0)  # km/h 또는 m/s
-                                else:
-                                    wind_speed = wind_speed_obj if wind_speed_obj else 0
-                            else:
-                                wind_speed = 0
-                            
-                            # 아이콘 - weatherCondition.iconBaseUri 사용
-                            icon_base_uri = weather_condition.get("iconBaseUri", "") if isinstance(weather_condition, dict) else ""
-                            # iconBaseUri가 있으면 확장자 추가 (일반적으로 .png)
-                            if icon_base_uri:
-                                icon_url = f"{icon_base_uri}.png" if not icon_base_uri.endswith(('.png', '.jpg', '.svg')) else icon_base_uri
-                            else:
-                                icon_url = ""
-                            
-                            return {
-                                "temperature": round(float(temp_celsius), 1) if temp_celsius else None,
-                                "condition": condition,
-                                "description": description_text,
-                                "humidity": int(humidity) if humidity else None,
-                                "wind_speed": round(float(wind_speed), 1) if wind_speed else None,
-                                "icon": icon_url,  # Google Weather API는 전체 URL
-                                "icon_type": "google",  # 아이콘 타입 구분용
-                                "date": target_date.strftime("%Y-%m-%d")
-                            }
-                        else:
-                            # POST 방식 실패 시 GET 방식으로 재시도
-                            print(f"⚠️ POST 방식 실패 (HTTP {response.status}), GET 방식으로 재시도합니다.")
-                            async with session.get(url, params=get_params) as get_response:
-                                if get_response.status == 200:
-                                    data = await get_response.json()
-                                    
-                                    # Google Weather API 응답 파싱 (POST와 동일)
-                                    temperature_obj = data.get("temperature", {})
-                                    if isinstance(temperature_obj, dict):
-                                        temp_celsius = temperature_obj.get("degrees", 0)
-                                    else:
-                                        temp_celsius = temperature_obj if temperature_obj else 0
-                                    
-                                    weather_condition = data.get("weatherCondition", {})
-                                    condition_code = weather_condition.get("type", "") if isinstance(weather_condition, dict) else ""
-                                    
-                                    condition_map = {
-                                        "CLEAR": "맑음",
-                                        "PARTLY_CLOUDY": "구름 조금",
-                                        "MOSTLY_CLOUDY": "구름 많음",
-                                        "CLOUDY": "흐림",
-                                        "RAIN": "비",
-                                        "SHOWERS": "소나기",
-                                        "THUNDERSTORMS": "천둥번개",
-                                        "SNOW": "눈",
-                                        "FOG": "안개",
-                                        "HAZE": "연무"
-                                    }
-                                    condition = condition_map.get(condition_code, condition_code)
-                                    
-                                    description_obj = weather_condition.get("description", {}) if isinstance(weather_condition, dict) else {}
-                                    description_text = description_obj.get("text", condition) if isinstance(description_obj, dict) else condition
-                                    
-                                    humidity = data.get("relativeHumidity", 0)
-                                    
-                                    wind_obj = data.get("wind", {})
-                                    if isinstance(wind_obj, dict):
-                                        wind_speed_obj = wind_obj.get("speed", {})
-                                        if isinstance(wind_speed_obj, dict):
-                                            wind_speed = wind_speed_obj.get("value", 0)
-                                        else:
-                                            wind_speed = wind_speed_obj if wind_speed_obj else 0
-                                    else:
-                                        wind_speed = 0
-                                    
-                                    icon_base_uri = weather_condition.get("iconBaseUri", "") if isinstance(weather_condition, dict) else ""
-                                    if icon_base_uri:
-                                        icon_url = f"{icon_base_uri}.png" if not icon_base_uri.endswith(('.png', '.jpg', '.svg')) else icon_base_uri
-                                    else:
-                                        icon_url = ""
-                                    
-                                    return {
-                                        "temperature": round(float(temp_celsius), 1) if temp_celsius else None,
-                                        "condition": condition,
-                                        "description": description_text,
-                                        "humidity": int(humidity) if humidity else None,
-                                        "wind_speed": round(float(wind_speed), 1) if wind_speed else None,
-                                        "icon": icon_url,
-                                        "icon_type": "google",
-                                        "date": target_date.strftime("%Y-%m-%d")
-                                    }
-                                else:
-                                    # GET 방식도 실패한 경우 에러 반환
-                                    error_text = await get_response.text()
-                                    error_data = {}
-                                    try:
-                                        if get_response.content_type == 'application/json':
-                                            error_data = await get_response.json()
-                                    except:
-                                        pass
-                                    
-                                    error_msg = ""
-                                    if isinstance(error_data, dict):
-                                        error_info = error_data.get('error', {})
-                                        if isinstance(error_info, dict):
-                                            error_msg = error_info.get('message', '')
-                                    
-                                    if not error_msg:
-                                        error_msg = error_text[:200] if error_text else f"HTTP {get_response.status}"
-                                    
-                                    print(f"❌ Google Weather API 호출 실패 (POST 및 GET 모두 실패)")
-                                    print(f"   URL: {url}")
-                                    print(f"   위도: {lat}, 경도: {lng}")
-                                    print(f"   POST 오류: HTTP {response.status}")
-                                    print(f"   GET 오류: HTTP {get_response.status} - {error_msg}")
-                                    
-                                    fallback = await fetch_openweather(session, target_date)
-                                    if fallback:
-                                        return fallback
-                                    return {
-                                        "temperature": None,
-                                        "condition": "정보 없음",
-                                        "description": f"날씨 정보를 가져올 수 없습니다. (HTTP {get_response.status}: {error_msg})",
-                                        "humidity": None,
-                                        "wind_speed": None,
-                                        "icon": None,
-                                        "icon_type": None,
-                                        "date": target_date.strftime("%Y-%m-%d")
-                                    }
-                except aiohttp.ClientError as e:
-                    error_msg = f"네트워크 오류: {str(e)}"
-                    print(f"❌ Google Weather API 네트워크 오류: {e}")
-                    print(f"   URL: {url}")
-                    print(f"   위도: {lat}, 경도: {lng}")
-                    fallback = await fetch_openweather(session, target_date)
-                    if fallback:
-                        return fallback
-                    return {
-                        "temperature": None,
-                        "condition": "정보 없음",
-                        "description": f"날씨 정보를 가져올 수 없습니다: {error_msg}",
-                        "humidity": None,
-                        "wind_speed": None,
-                        "icon": None,
-                        "icon_type": None,
-                        "date": target_date.strftime("%Y-%m-%d")
-                    }
-        except Exception as e:
-            print(f"⚠️ 날씨 정보 가져오기 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                async with aiohttp.ClientSession() as session:
-                    fallback = await fetch_openweather(session, target_date if "target_date" in locals() else datetime.now())
-                    if fallback:
-                        return fallback
-            except Exception:
-                pass
+            # OpenWeather 호출
+            async with aiohttp.ClientSession() as session:
+                result = await fetch_openweather(session, target_date)
+                if result:
+                    return result
+
             return {
                 "temperature": None,
                 "condition": "정보 없음",
-                "description": f"날씨 정보를 가져오는 중 오류가 발생했습니다: {str(e)}",
+                "description": "날씨 정보를 가져올 수 없습니다.",
                 "humidity": None,
                 "wind_speed": None,
                 "icon": None,
-                "icon_type": None,  # 아이콘 타입 필드 추가
+                "icon_type": None,
+                "date": target_date.strftime("%Y-%m-%d")
+            }
+        except Exception as e:
+            print(f"⚠️ 날씨 정보 가져오기 실패: {e}")
+            return {
+                "temperature": None,
+                "condition": "정보 없음",
+                "description": "날씨 정보를 가져올 수 없습니다.",
+                "humidity": None,
+                "wind_speed": None,
+                "icon": None,
+                "icon_type": None,
                 "date": date or datetime.now().strftime("%Y-%m-%d")
             }
     
