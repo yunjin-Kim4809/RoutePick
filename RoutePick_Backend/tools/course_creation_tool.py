@@ -601,50 +601,51 @@ class CourseCreationTool(BaseTool):
             place['original_index'] = i
         
         system_instruction = """
-# Role
-여행 가이드. 제공된 장소 리스트에서 최적의 코스를 선택하고 JSON으로 반환.
+        # Role
+        여행 가이드. 제공된 장소 리스트에서 최적의 코스를 선택하고 JSON으로 반환.
 
-# Input
-- 장소 리스트: {places} (형식: [인덱스]이름|카테고리|⭐|좌표|평점)
-- 허용 인덱스 목록: {allowed_indices}
-- 사용자 선호: {user_preferences}
-- 시간 제약: {time_constraints}
-**중요**: 각 장소의 original_index를 기준으로 인덱스 참조.
+        # Input
+        - 장소 리스트: {places} (형식: [인덱스]이름|카테고리|⭐|좌표|평점)
+        - 허용 인덱스 목록: {allowed_indices}
+        - 사용자 선호: {user_preferences}
+        - 시간 제약: {time_constraints}
+        - 날씨 정보: {weather_info}
+        **중요**: 각 장소의 original_index를 기준으로 인덱스 참조.
 
-# Constraints
-1. 저장된 장소(⭐ 표시) 최우선 포함
-2. check_routing tool로 거리/시간 계산 (coordinates 필수: {{"lat":숫자,"lng":숫자}})
-   **중요: 같은 장소 조합에 대해서는 한 번만 check_routing을 호출하세요. 이미 검증한 경로는 다시 확인하지 마세요.**
-   **중요: 좌표가 동일하거나 매우 가까운 장소(10m 이내)는 check_routing을 호출하지 말고 직접 경로로 처리하세요.**
-3. 좌표 기반으로 가까운 장소 우선 그룹화
-4. 이동 시간 30분 이내
-5. 도보 우선 (차이 20분 이내면 도보)
-6. 식당/카페 연속 방문 금지
+        # Constraints
+        1. 저장된 장소(⭐ 표시) 최우선 포함
+        2. check_routing tool로 거리/시간 계산 (coordinates 필수: {{"lat":숫자,"lng":숫자}})
+        **중요: 같은 장소 조합에 대해서는 한 번만 check_routing을 호출하세요. 이미 검증한 경로는 다시 확인하지 마세요.**
+        **중요: 좌표가 동일하거나 매우 가까운 장소(10m 이내)는 check_routing을 호출하지 말고 직접 경로로 처리하세요.**
+        3. 좌표 기반으로 가까운 장소 우선 그룹화
+        4. 이동 시간 30분 이내
+        5. 도보 우선 (차이 20분 이내면 도보)
+        6. 식당/카페 연속 방문 금지
 
-# Workflow
-1. 저장된 장소(⭐) 선정
-2. 테마에 맞는 추가 장소 선정
-3. 식당/카페 연속 방문 체크 및 재배치
-4. 거리 최소화 순서로 배열
-5. check_routing으로 경로 검증 (중요: 같은 장소 조합은 한 번만 검증하세요. 이미 검증한 경로는 다시 확인하지 마세요.)
-6. JSON 출력
+        # Workflow
+        1. 저장된 장소(⭐) 선정
+        2. 테마에 맞는 추가 장소 선정
+        3. 식당/카페 연속 방문 체크 및 재배치
+        4. 거리 최소화 순서로 배열
+        5. check_routing으로 경로 검증 (중요: 같은 장소 조합은 한 번만 검증하세요. 이미 검증한 경로는 다시 확인하지 마세요.)
+        6. JSON 출력
 
-# Output (JSON만)
-{{
-  "selected_places": [장소 리스트],
-  "sequence": [선택된 장소 내 순서 인덱스],
-  "estimated_duration": {{"선택된 장소 인덱스": 분}},
-  "course_description": "코스 설명",
-  "reasoning": "선정 이유"
-}}
+        # Output (JSON만)
+        {{
+        "selected_places": [장소 리스트],
+        "sequence": [선택된 장소 내 순서 인덱스],
+        "estimated_duration": {{"선택된 장소 인덱스": 분}},
+        "course_description": "코스 설명",
+        "reasoning": "선정 이유"
+        }}
 
-# Rules
-- selected_places: 반드시 허용 인덱스 목록 안의 정수만 사용
-- sequence: selected_places 기준 0..N-1 인덱스 (예: selected_places가 3개면 sequence는 0~2만)
-- reasoning: "1. [original_index] 장소이름: 설명" 형식, 모든 인덱스 포함
-- JSON 마지막 쉼표 금지
-- 인덱스 연산 금지 (+1/-1 등)
-"""
+        # Rules
+        - selected_places: 반드시 허용 인덱스 목록 안의 정수만 사용
+        - sequence: selected_places 기준 0..N-1 인덱스 (예: selected_places가 3개면 sequence는 0~2만)
+        - reasoning: "1. [original_index] 장소이름: 설명" 형식, 모든 인덱스 포함
+        - JSON 마지막 쉼표 금지
+        - 인덱스 연산 금지 (+1/-1 등)
+        """
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_instruction),
@@ -652,106 +653,6 @@ class CourseCreationTool(BaseTool):
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
-
-        # prompt = f"""
-        # # Role
-        # 당신은 현지 지리에 능통하고 모든 장소를 방문해본 여행 가이드입니다. 당신은 효율적인 경로 설계에 능통합니다.
-        # **당신의 임무는 제공된 장소 리스트에서 최적의 코스를 선택하고 JSON 형식으로 반환하는 것입니다.**
-        
-        # Input Data
-        # - 장소 리스트 : {self._format_places_for_prompt(places)}
-        # - 사용자 선호 조건{{
-        #     "theme": {user_preferences['theme']},
-        #     "group_size": {user_preferences['group_size']},
-        #     "visit_date": {user_preferences['visit_date']},
-        #     "visit_time": {user_preferences['visit_time']},
-        #     "transportation": {user_preferences['transportation']},
-        #     "budget": {user_preferences.get('budget', '없음')}원
-        # }}
-
-        # # Constraints
-        # 1. **최우선 규칙: 사용자가 저장한 장소(⭐ [사용자가 저장한 장소 - 최우선 고려] 표시가 있는 장소)는 반드시 최우선적으로 고려해야 합니다.**
-        #    - 저장된 장소는 이미 테마와 위치 필터링을 통과했으므로, 사용자의 의도에 부합하는 장소입니다.
-        #    - 저장된 장소가 사용자의 테마와 위치 조건에 부합한다면, 반드시 코스에 포함시켜야 합니다.
-        #    - 저장된 장소를 포함하는 것이 다른 제약 조건(거리, 시간 등)과 충돌하더라도, 가능한 한 포함하도록 노력하세요.
-        # 2. **예산 제약: 사용자가 예산을 입력한 경우(예산이 "없음"이 아닌 경우), 반드시 예산 내에서 코스를 설계해야 합니다.**
-        #    - 예산이 입력된 경우에만 이 제약을 적용합니다. 예산이 "없음"이거나 입력되지 않은 경우에는 예산 제약을 무시합니다.
-        #    - 예산이 입력된 경우, 각 장소의 예상 비용(입장료, 식사비, 교통비 등)을 고려하여 총 예산을 초과하지 않도록 해야 합니다.
-        #    - 장소별 예상 비용은 카테고리와 평점을 기반으로 추정하세요 (예: 관광지 입장료 5,000-20,000원, 식당 식사비 10,000-50,000원, 카페 음료 5,000-15,000원).
-        #    - 교통비도 예산에 포함시켜야 합니다 (지하철 1,250원, 버스 1,300원, 택시 기본요금 3,800원 등).
-        #    - 예산이 부족할 경우, 무료 또는 저렴한 장소를 우선적으로 선택하거나, 비용이 많이 드는 장소를 제외해야 합니다.
-        #    - 예산이 충분한 경우에도, 불필요하게 비싼 장소만 선택하지 말고 다양한 가격대의 장소를 균형있게 선택하세요.
-        # 3. 제공된 [위치 좌표(위도, 경도)] 데이터를 기반으로 장소 간의 실제 물리적 거리를 계산하여 코스를 짤 것.
-        # 4. 당신의 배경지식보다 입력된 좌표 정보가 서로 가까운 장소들을 우선적으로 그룹화할 것.
-        # 5. 추천 신뢰도(Trust Score)가 높은 장소를 우선적으로 고려하되, 지리적 동선 효율성을 해치지 않는 범위 내에서 선택할 것.
-        # 6. 각 코스 간 이동 거리는 30분 이내일 것. (좌표 데이터를 참고하여 보수적으로 판단)
-        # 7. 도보 외의 교통 수단의 사용 빈도를 최소화할 것. 단, 환승은 사용 빈도 계산에서 제외한다. 도보와 교통 수단의 이동 시간 차이가 20분 이내이면 도보를 선택한다.
-        # 8. 이전에 방문한 장소를 다시 지나지 않을 것.
-        # 9. 장소에 현재 인원이 모두 수용 가능할 것.
-        # 10. 장소가 방문 일자에 운영중임을 확인할 것. 입력된 정보가 없을 시 보수적으로 판단한다.
-        # 11. 음식점, 카페 등을 코스 중간마다 배치할 것.
-
-        # # Task Workflow
-        # 1. **최우선 단계: 사용자가 저장한 장소(⭐ [사용자가 저장한 장소 - 최우선 고려] 표시)를 먼저 선정합니다.**
-        #    - 저장된 장소는 이미 테마와 위치 필터링을 통과했으므로, 가능한 한 모두 포함하도록 노력하세요.
-        #    - 저장된 장소가 여러 개인 경우, 모두 포함하거나 최대한 많이 포함하세요.
-        # 2. **예산 확인 단계: 예산이 입력된 경우(예산이 "없음"이 아닌 경우)에만, 각 장소의 예상 비용을 계산합니다.**
-        #    - 예산이 입력된 경우에만 이 단계를 수행합니다.
-        #    - 저장된 장소와 새로 선정할 장소의 예상 비용을 합산하여 예산을 초과하지 않는지 확인합니다.
-        #    - 예산을 초과할 경우, 비용이 적은 장소를 우선적으로 선택하거나 비싼 장소를 제외합니다.
-        #    - 예산 내에서 최대한 많은 장소를 포함하도록 노력하세요.
-        # 3. 저장된 장소를 포함한 상태에서, 사용자의 테마와 장소의 특징을 대조하여 추가로 적합한 장소들을 선정합니다. (예산 제약 고려)
-        # 4. 이동 거리를 최소화하는 순서로 배열합니다. (저장된 장소를 포함한 전체 코스 기준)
-        # 5. 선정된 순서가 실제 방문 가능 시간(영업시간) 내에 있는지 검증합니다.
-        # 6. 예산이 입력된 경우, 최종 코스의 총 예상 비용이 예산을 초과하지 않는지 최종 확인합니다.
-        # 7. 모든 논리적 검증이 끝나면 최종 JSON을 출력합니다.
-        # 
-        # **중요: 저장된 장소를 코스에 포함시키는 것이 최우선 목표이며, 예산이 입력된 경우 예산 제약도 반드시 준수해야 합니다.**
-
-        # # Task Workflow
-        # 1. 사용자의 테마와 장소의 특징을 대조하여 적합한 장소들을 선정합니다.
-        # 2. 이동 거리를 최소화하는 순서로 배열합니다.
-        # 3. 선정된 순서가 실제 방문 가능 시간(영업시간) 내에 있는지 검증합니다.
-        # 4. 모든 논리적 검증이 끝나면 최종 JSON을 출력합니다.
-
-        # # IMPORTANT: Output Format
-        # **당신은 반드시 이 작업을 수행해야 합니다. 작업을 거부하거나 설명을 제공하지 마세요.**
-        # **오직 JSON 형식만 출력하세요. 다른 텍스트, 설명, 마크다운 헤더는 절대 포함하지 마세요.**
-
-        # ---
-
-        # ## Return Value
-        # 코스 설계 완료 후, **반드시 다음의 JSON 형식만** 출력하세요. 다른 설명이나 텍스트는 포함하지 마세요.
-        # 
-        # ```json
-        # {{
-        #     "selected_places": [장소 인덱스 리스트],
-        #     "sequence": [방문 순서],
-        #     "estimated_duration": {{장소별 체류 시간 (분)}},
-        #     "course_description": "코스 설명",
-        #     "reasoning": "선정 이유"
-        # }}
-        # ```
-
-        # ### OUTPUT Rules
-        # - "selected_places"는 0부터 시작하는 장소 인덱스 리스트입니다 (예: [0, 2, 4])
-        # - **중요: 저장된 장소(⭐ [사용자가 저장한 장소 - 최우선 고려] 표시)의 인덱스는 반드시 selected_places에 포함되어야 합니다.**
-        # - "sequence"는 선택된 장소들의 방문 순서를 인덱스로 나타냅니다 (예: [0, 1, 2]는 첫 번째, 두 번째, 세 번째로 선택된 장소의 순서)
-        # - **중요: 저장된 장소는 sequence에도 반드시 포함되어야 하며, 가능하면 앞쪽 순서에 배치하세요.**
-        # - "estimated_duration"은 장소 인덱스를 키로 하고 체류 시간(분)을 값으로 하는 객체입니다 (예: {{"0": 60, "2": 90, "4": 45}})
-        # - "course_description"에는 방문하는 각각의 장소에 대한 간단한 설명들을 첨부합니다.
-        # - **중요: course_description에 언급한 모든 장소는 반드시 selected_places에도 포함되어야 합니다.**
-        # - "reasoning"에는 인덱스를 **장소이름(인덱스)** 형태로 언급하고, 인덱스에 해당하는 장소에 대한 설명을 바탕으로 사용자 선호 조건 중 만족시킨 사항들을 설명합니다.
-        # - "reasoning"을 생성할 때, 방문하는 장소들의 순서 및 이동수단 설계 과정에 대해 설명하세요.
-        # - 예산이 입력된 경우, "reasoning"에 예산이 어떻게 고려되었는지, 각 장소의 예상 비용과 총 예상 비용을 포함하여 설명하세요.
-        # 
-        # # 설명 예시:
-        # # - 장소 A와 장소 C 사이에 장소 B가 있고, 다시 장소 A 주변 지역을 가지 않을 예정이기에 A-B-C 순서로 일정을 설계하였습니다.
-        # # - 방문 기간이 오후이기 때문에, 잠시 쉬어가기 위해 장소 A와 장소 C 사이에 **카페** B를 먼저 방문합니다.
-        # # - 장소 A와 장소 B 사이에 오르막길이 길게 있고 도보 시간이 15분 이상 걸리기 때문에, 이동수단으로 **버스**를 선택했습니다.
-        # 
-        # **중요: JSON 형식만 출력하고, 다른 텍스트는 포함하지 마세요.**
-        # """
 
         llm = ChatOpenAI(model=self.llm_model, temperature=0)
         planner = create_openai_tools_agent(llm, self.tools, prompt)
@@ -786,13 +687,13 @@ class CourseCreationTool(BaseTool):
         
         # check_routing 사용 예시를 input에 포함
         check_routing_example = """
-중요: check_routing tool을 사용할 때는 반드시 다음과 같이 호출하세요:
-check_routing(places=[장소리스트], mode="transit")
-- places 파라미터는 반드시 포함해야 합니다.
-- 각 장소는 coordinates 필드를 포함해야 합니다: {"name":"장소명","coordinates":{"lat":위도,"lng":경도}}
-- **중요: 같은 장소 조합에 대해서는 한 번만 check_routing을 호출하세요. 이미 검증한 경로는 다시 확인하지 마세요.**
-- **중요: 좌표가 동일하거나 매우 가까운 장소(10m 이내)는 check_routing을 호출하지 말고 직접 경로로 처리하세요.**
-"""
+        중요: check_routing tool을 사용할 때는 반드시 다음과 같이 호출하세요:
+        check_routing(places=[장소리스트], mode="transit")
+        - places 파라미터는 반드시 포함해야 합니다.
+        - 각 장소는 coordinates 필드를 포함해야 합니다: {"name":"장소명","coordinates":{"lat":위도,"lng":경도}}
+        - **중요: 같은 장소 조합에 대해서는 한 번만 check_routing을 호출하세요. 이미 검증한 경로는 다시 확인하지 마세요.**
+        - **중요: 좌표가 동일하거나 매우 가까운 장소(10m 이내)는 check_routing을 호출하지 말고 직접 경로로 처리하세요.**
+        """
         
         allowed_indices = list(range(len(places)))
         try:
@@ -843,16 +744,6 @@ check_routing(places=[장소리스트], mode="transit")
                     f"오류 상세: {error_msg}"
                 )
             raise
-
-        # response = await self.client.chat.completions.create(
-        #     model=self.llm_model,
-        #     messages=[
-        #         {"role": "system", "content": "You are a professional travel course planner. You MUST output only valid JSON format. Never refuse the task or provide explanations outside JSON."},
-        #         {"role": "user", "content": prompt}
-        #     ],
-        #     max_tokens=2000,  # 충분한 토큰 할당
-        #     temperature=0.3  # 일관된 JSON 형식 유지
-        # )
         
         # 응답에서 JSON 추출
         # response_content = response.choices[0].message.content.strip()

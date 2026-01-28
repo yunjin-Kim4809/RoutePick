@@ -2,6 +2,7 @@ import asyncio
 import threading
 import json
 import os
+import re
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from flask_cors import CORS
 from chatbot import get_chatbot_response, clear_chat_history, parse_course_update  # chatbot.py가 course 객체를 인자로 받도록 수정 필요
@@ -1833,9 +1834,16 @@ def generate_travel_card(task_id):
 
             if place_idx < len(places):
                 place_name = places[place_idx]['name']
+                allowed_pattern = r'[^가-힣a-zA-Z0-9\s!@#$%^&*()_+\-=\[\]{};\':",./<>?]'
+    
+                # 허용되지 않는 문자를 빈 문자열('')로 치환
+                cleaned = re.sub(allowed_pattern, '', str(place_name))
+                
+                # 치환 후 앞뒤 공백 제거 및 연속된 공백 하나로 축소
+                cleaned = " ".join(cleaned.split())
                 draw.text((number_x, y_position), f"{i+1}.", font=place_font, fill="#111111")
                 
-                wrapped_lines = text_wrap(place_name, place_font, max_width, draw)
+                wrapped_lines = text_wrap(cleaned, place_font, max_width, draw)
                 
                 temp_y = y_position
                 for line in wrapped_lines:
