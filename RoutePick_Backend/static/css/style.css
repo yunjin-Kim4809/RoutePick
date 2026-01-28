@@ -10,7 +10,7 @@ body, html { margin: 0; height: 100%; font-family: sans-serif; overflow: hidden;
 
 /* 우측 영역 */
 .right-pane { width: 70%; display: flex; flex-direction: column; position: relative; }
-#map-container { height: 50%; width: 100%; background: #eee; }
+#map-container { height: 50%; width: 100%; background: #eee; position: relative; }
 
 /* (c) 카드 매트릭스 */
 .card { display: flex; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden; height: 100px; }

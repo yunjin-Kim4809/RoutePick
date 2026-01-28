@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const sequence = data.sequence || [];
                 const places = data.places || [];
                 const estimated_duration = data.estimated_duration || {};
+                const weather_info = data.weather_info || {};  // weather_info 변수 추가
                 
                 if (sequence.length > 0 && places.length > 0) {
                     let courseMessage = '<div style="margin-bottom: 12px;"><strong style="font-size: 1.15em; color: #C5A683; display: block; margin-bottom: 12px;">📍 방문 순서</strong></div>';
@@ -51,6 +52,37 @@ document.addEventListener('DOMContentLoaded', () => {
                             courseMessage += `<div style="margin-bottom: 4px;">📌 <span style="color: #888; font-weight: 500;">카테고리:</span> <span style="color: #1a1a1a;">${place.category || 'N/A'}</span></div>`;
                             courseMessage += `<div style="margin-bottom: 4px;">⏱ <span style="color: #888; font-weight: 500;">체류 시간:</span> <span style="color: #1a1a1a; font-weight: 600;">${duration}분</span></div>`;
                             courseMessage += `<div style="margin-bottom: 4px;">⭐ <span style="color: #888; font-weight: 500;">평점:</span> <span style="color: #f39c12; font-weight: 600;">${place.rating || 'N/A'}</span></div>`;
+                            
+                            // 날씨 정보 표시 (data.weather_info 사용)
+                            if (weather_info && weather_info[placeIdx]) {
+                                const weather = weather_info[placeIdx];
+                                if (weather.temperature !== null && weather.temperature !== undefined) {
+                                    // 아이콘 URL 처리 (Google Weather API는 전체 URL, OpenWeatherMap은 코드만)
+                                    let weatherIcon = '';
+                                    if (weather.icon) {
+                                        // icon_type이 없거나 google이거나 http로 시작하면 전체 URL로 간주
+                                        if (!weather.icon_type || weather.icon_type === 'google' || weather.icon.startsWith('http')) {
+                                            // Google Weather API: 전체 URL 사용
+                                            weatherIcon = weather.icon;
+                                        } else {
+                                            // OpenWeatherMap: 코드를 URL로 변환
+                                            weatherIcon = `https://openweathermap.org/img/wn/${weather.icon}@2x.png`;
+                                        }
+                                    }
+                                    courseMessage += `<div style="margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">`;
+                                    courseMessage += `<span style="color: #888; font-weight: 500;">🌤 날씨:</span>`;
+                                    if (weatherIcon) {
+                                        courseMessage += `<img src="${weatherIcon}" alt="${weather.condition}" style="width: 24px; height: 24px; vertical-align: middle;" />`;
+                                    }
+                                    courseMessage += `<span style="color: #1a1a1a; font-weight: 600;">${weather.temperature}°C</span>`;
+                                    courseMessage += `<span style="color: #666; margin-left: 4px;">${weather.condition || weather.description || ''}</span>`;
+                                    if (weather.humidity !== null && weather.humidity !== undefined) {
+                                        courseMessage += `<span style="color: #888; margin-left: 8px; font-size: 0.85em;">습도 ${weather.humidity}%</span>`;
+                                    }
+                                    courseMessage += `</div>`;
+                                }
+                            }
+                            
                             courseMessage += `<div style="margin-bottom: 6px;">📍 <span style="color: #888; font-weight: 500;">주소:</span> <span style="color: #1a1a1a;">${place.address || '주소 정보 없음'}</span></div>`;
                             if (place.map_url) {
                                 courseMessage += `<div><a href="${place.map_url}" target="_blank" style="color: #C5A683; text-decoration: none; font-weight: 600; border-bottom: 1px solid #C5A683; padding-bottom: 1px; transition: color 0.2s;">🔗 지도 보기</a></div>`;
@@ -235,17 +267,29 @@ document.addEventListener('DOMContentLoaded', () => {
             const places = updatedCourse.places || [];
             const sequence = updatedCourse.sequence || [];
             const location = updatedCourse.location || "";
+            const weather_info = updatedCourse.weather_info || {};
             
             // sequence 순서대로 places 재배열
             const orderedPlaces = [];
             if (sequence.length > 0) {
                 for (const idx of sequence) {
                     if (idx < places.length) {
-                        orderedPlaces.push(places[idx]);
+                        const place = { ...places[idx] };
+                        // 날씨 정보 추가
+                        if (weather_info[idx] !== undefined) {
+                            place.weather_info = weather_info[idx];
+                        }
+                        orderedPlaces.push(place);
                     }
                 }
             } else {
-                orderedPlaces.push(...places);
+                places.forEach((place, idx) => {
+                    const placeWithWeather = { ...place };
+                    if (weather_info[idx] !== undefined) {
+                        placeWithWeather.weather_info = weather_info[idx];
+                    }
+                    orderedPlaces.push(placeWithWeather);
+                });
             }
             
             console.log('정렬된 장소:', orderedPlaces);
@@ -331,6 +375,18 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             console.log('코스 업데이트 완료');
+            
+            // 날씨 정보가 있으면 표시
+            if (weather_info && Object.keys(weather_info).length > 0) {
+                const firstWeatherKey = Object.keys(weather_info)[0];
+                const weather = weather_info[firstWeatherKey];
+                if (weather && weather.temperature !== null && weather.temperature !== undefined) {
+                    // displayWeatherOnMap 함수가 script.js에 정의되어 있으므로 호출
+                    if (typeof displayWeatherOnMap === 'function') {
+                        displayWeatherOnMap(weather, updatedCourse.visit_date);
+                    }
+                }
+            }
             
             // 챗봇에 업데이트 알림 메시지 추가
             appendMessage('bot', '✅ 코스가 업데이트되었습니다! 지도와 장소 목록을 확인해보세요. 🗺️', true);

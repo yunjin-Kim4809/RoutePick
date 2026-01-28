@@ -68,6 +68,16 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
     const places = data.places;
     const sequence = data.sequence || [];
     
+    // 날씨 정보 표시 (지도 왼쪽 위)
+    if (data.weather_info && Object.keys(data.weather_info).length > 0) {
+        // 첫 번째 날씨 정보 사용 (모든 장소가 같은 지역이므로 동일한 날씨)
+        const firstWeatherKey = Object.keys(data.weather_info)[0];
+        const weather = data.weather_info[firstWeatherKey];
+        if (weather && weather.temperature !== null && weather.temperature !== undefined) {
+            displayWeatherOnMap(weather, data.visit_date);
+        }
+    }
+    
     // sequence 순서대로 places 재배열
     const orderedPlaces = [];
     if (sequence.length > 0) {
@@ -135,26 +145,39 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
     const validCoords = results.filter(c => c !== null);
     const validPlaces = orderedPlaces.filter((place, idx) => results[idx] !== null);
 
-    // 실제 도로 경로 그리기 (Directions Service 사용)
+    // 경로 안내 버튼과 동일한 경로로 초기 표시
     if (validCoords.length > 1) {
-        await drawActualRoute(validCoords, validPlaces, data);
-        
-        // 화면 자동 맞춤
-        const bounds = new google.maps.LatLngBounds();
-        validCoords.forEach(c => bounds.extend(c));
-        map.fitBounds(bounds);
+        const routePaths = await fetchRouteGuidePaths(taskId);
+        if (routePaths && routePaths.length > 0) {
+            drawRouteFromServerData(routePaths);
+        } else {
+            // 폴백: 서버 경로가 없으면 기존 방식 사용
+            await drawActualRoute(validCoords, validPlaces, data);
+            const bounds = new google.maps.LatLngBounds();
+            validCoords.forEach(c => bounds.extend(c));
+            map.fitBounds(bounds);
+        }
     }
     
     // 전역 변수 업데이트
     window.markers = markers;
     window.polylines = polylines;
+    
+    // 날씨 정보가 있으면 표시 (데이터에서 다시 확인)
+    if (data.weather_info && Object.keys(data.weather_info).length > 0) {
+        const firstWeatherKey = Object.keys(data.weather_info)[0];
+        const weather = data.weather_info[firstWeatherKey];
+        if (weather && weather.temperature !== null && weather.temperature !== undefined) {
+            displayWeatherOnMap(weather, data.visit_date);
+        }
+    }
 };
 
 // 이동 수단별 색상 정의
 const TRANSPORT_COLORS = {
     'WALKING': '#4285F4',      // 파란색 - 도보
     'DRIVING': '#9C27B0',      // 보라색 - 자동차
-    'BICYCLING': '#FFC107',    // 노란색 - 자전거
+    // 자전거는 완전히 제외됨
     'TRANSIT_BUS': '#4CAF50',  // 초록색 - 버스
     'TRANSIT_SUBWAY': '#F44336', // 빨간색 - 지하철
     'TRANSIT': '#FF9800',      // 주황색 - 기타 대중교통
@@ -178,24 +201,42 @@ function getTransportStyle(travelMode, transitDetails) {
         strokeWeight = 6;
         strokeOpacity = 0.8;
         zIndex = 2;
-    } else if (travelMode === 'BICYCLING') {
-        color = TRANSPORT_COLORS.BICYCLING;
-        strokeWeight = 4;
-        strokeOpacity = 0.7;
-        zIndex = 1;
     } else if (travelMode === 'TRANSIT') {
         // 대중교통인 경우 세부 정보 확인
         if (transitDetails) {
-            const vehicle = transitDetails.line?.vehicle;
-            const vehicleType = vehicle?.type?.toLowerCase() || '';
-            const lineName = transitDetails.line?.name || '';
+            // 서버에서 받은 transitDetails는 딕셔너리 형태일 수 있음
+            const line = transitDetails.line || {};
+            const vehicle = line.vehicle || {};
+            const vehicleType = (vehicle.type || '').toLowerCase();
+            const lineName = line.name || '';
+            const lineShortName = line.short_name || '';
             
-            if (vehicleType === 'subway' || 'subway' in vehicleType || '지하철' in lineName || '호선' in lineName) {
+            // 지하철 판단 (더 관대한 조건)
+            const isSubway = (
+                vehicleType === 'subway' || 
+                vehicleType.includes('subway') || 
+                lineName.includes('지하철') || 
+                lineName.includes('호선') || 
+                lineShortName.includes('호선') ||
+                lineName.toLowerCase().includes('line') ||
+                lineShortName.toLowerCase().includes('line')
+            );
+            
+            // 버스 판단
+            const isBus = (
+                vehicleType === 'bus' || 
+                vehicleType.includes('bus') || 
+                lineName.includes('버스') ||
+                lineShortName.includes('버스') ||
+                (!isSubway && lineShortName && /\d+/.test(lineShortName))
+            );
+            
+            if (isSubway) {
                 color = TRANSPORT_COLORS.TRANSIT_SUBWAY;
                 strokeWeight = 7;
                 strokeOpacity = 0.9;
                 zIndex = 3;
-            } else if (vehicleType === 'bus' || 'bus' in vehicleType || '버스' in lineName) {
+            } else if (isBus) {
                 color = TRANSPORT_COLORS.TRANSIT_BUS;
                 strokeWeight = 6;
                 strokeOpacity = 0.8;
@@ -227,17 +268,13 @@ window.drawActualRoute = async function(coords, places, courseData) {
         const transportation = courseData.transportation || '도보';
         let travelMode = google.maps.TravelMode.WALKING;
         
-        // 우선순위: 지하철/버스 > 자동차 > 도보 > 자전거
-        // 자전거는 사용자가 명시적으로 선택한 경우에만 사용
+        // 우선순위: 지하철/버스 > 자동차 > 도보 (자전거 제외)
         if (transportation.includes('버스') || transportation.includes('지하철')) {
             travelMode = google.maps.TravelMode.TRANSIT;
         } else if (transportation.includes('자동차')) {
             travelMode = google.maps.TravelMode.DRIVING;
-        } else if (transportation.includes('자전거')) {
-            // 자전거는 사용자가 명시적으로 선택한 경우에만 사용
-            travelMode = google.maps.TravelMode.BICYCLING;
         } else {
-            // 기본값은 도보
+            // 기본값은 도보 (자전거는 완전히 제외)
             travelMode = google.maps.TravelMode.WALKING;
         }
 
@@ -339,6 +376,210 @@ window.drawActualRoute = async function(coords, places, courseData) {
     }
 };
 
+// 서버에서 받은 경로 좌표 정보로 지도에 경로 그리기
+function drawRouteFromServerData(routePaths) {
+    // 경로 정보 출력 (요약 + 전체 데이터)
+    const totalSegments = routePaths ? routePaths.length : 0;
+    const totalSteps = routePaths ? routePaths.reduce((sum, seg) => sum + (seg ? seg.length : 0), 0) : 0;
+    const totalCoords = routePaths ? routePaths.reduce((sum, seg) => {
+        return sum + (seg ? seg.reduce((s, step) => s + (step.path ? step.path.length : 0), 0) : 0);
+    }, 0) : 0;
+    console.log(`drawRouteFromServerData 호출: 지도=${!!window.map}, ${totalSegments}개 구간, ${totalSteps}개 step, 총 ${totalCoords}개 좌표`);
+    console.log('routePaths:', routePaths);
+    
+    if (!window.map) {
+        console.error('지도가 초기화되지 않았습니다.');
+        return;
+    }
+    
+    if (!routePaths || routePaths.length === 0) {
+        console.warn('경로 정보가 없습니다.');
+        return;
+    }
+    
+    // 기존 경로 제거
+    if (window.polylines && window.polylines.length > 0) {
+        window.polylines.forEach(polyline => {
+            if (polyline.setMap) {
+                polyline.setMap(null);
+            }
+        });
+        window.polylines = [];
+    }
+    
+    // 각 구간별로 경로 그리기
+    routePaths.forEach((segmentPaths, segmentIndex) => {
+        if (!segmentPaths || segmentPaths.length === 0) {
+            return;
+        }
+        
+        // 각 step별로 경로 그리기
+        segmentPaths.forEach((stepData, stepIndex) => {
+            const path = stepData.path || [];
+            const travelMode = stepData.travel_mode || 'WALKING';
+            const transitDetails = stepData.transit_details;
+            
+            if (path.length === 0) {
+                console.warn(`구간 ${segmentIndex}, step ${stepIndex}: 경로 좌표가 없습니다.`);
+                return;
+            }
+            
+            try {
+                // 경로 좌표를 Google Maps LatLng 객체로 변환
+                const pathCoordinates = path.map(coord => {
+                    if (!coord || typeof coord.lat !== 'number' || typeof coord.lng !== 'number') {
+                        console.warn('잘못된 좌표:', coord);
+                        return null;
+                    }
+                    return new google.maps.LatLng(coord.lat, coord.lng);
+                }).filter(coord => coord !== null);
+                
+                if (pathCoordinates.length === 0) {
+                    console.warn(`구간 ${segmentIndex}, step ${stepIndex}: 유효한 좌표가 없습니다.`);
+                    return;
+                }
+                
+                // 이동 수단별 스타일 가져오기
+                const style = getTransportStyle(travelMode, transitDetails);
+                
+                // Polyline 생성
+                const polyline = new google.maps.Polyline({
+                    path: pathCoordinates,
+                    strokeColor: style.color,
+                    strokeOpacity: style.strokeOpacity,
+                    strokeWeight: style.strokeWeight,
+                    zIndex: style.zIndex,
+                    map: window.map
+                });
+                
+                // 전역 polylines 배열에 추가
+                if (!window.polylines) {
+                    window.polylines = [];
+                }
+                window.polylines.push(polyline);
+                
+                console.log(`경로 그리기 성공: 구간 ${segmentIndex}, step ${stepIndex}, 이동수단: ${travelMode}, 좌표 개수: ${pathCoordinates.length}`);
+            } catch (error) {
+                console.error(`구간 ${segmentIndex}, step ${stepIndex} 경로 그리기 실패:`, error);
+            }
+        });
+    });
+    
+    // 범례 추가
+    addRouteLegend();
+    
+    // 지도 범위 조정 (모든 경로가 보이도록)
+    if (window.polylines.length > 0) {
+        const bounds = new google.maps.LatLngBounds();
+        window.polylines.forEach(polyline => {
+            const path = polyline.getPath();
+            if (path) {
+                path.forEach(point => {
+                    bounds.extend(point);
+                });
+            }
+        });
+        window.map.fitBounds(bounds);
+    }
+}
+
+// 서버 경로 안내 API에서 경로 좌표만 가져오기
+async function fetchRouteGuidePaths(taskId) {
+    if (!taskId) return null;
+    try {
+        const response = await fetch(`/api/route-guide/${taskId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        if (!response.ok) {
+            console.warn('경로 안내 API 응답 실패:', response.status);
+            return null;
+        }
+        const data = await response.json();
+        return data.route_paths || null;
+    } catch (error) {
+        console.warn('경로 안내 API 호출 실패:', error);
+        return null;
+    }
+}
+
+// 지도 왼쪽 위에 날씨 정보 표시 함수
+function displayWeatherOnMap(weather, visitDate) {
+    // 기존 날씨 정보 제거
+    const existingWeather = document.getElementById('weather-widget');
+    if (existingWeather) {
+        existingWeather.remove();
+    }
+    
+    // 날씨 위젯 생성
+    const weatherWidget = document.createElement('div');
+    weatherWidget.id = 'weather-widget';
+    weatherWidget.style.cssText = `
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+        padding: 12px 16px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 14px;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 180px;
+    `;
+    
+    // 날씨 아이콘 처리
+    let iconHtml = '🌤';
+    if (weather.icon) {
+        const iconType = weather.icon_type;
+        const icon = weather.icon;
+        // icon_type이 없거나 google이거나 http로 시작하면 전체 URL로 간주
+        const iconUrl = (!iconType || iconType === 'google' || icon.startsWith('http')) 
+            ? icon  // Google Weather API: 전체 URL 사용
+            : `https://openweathermap.org/img/wn/${icon}@2x.png`;  // OpenWeatherMap: 코드를 URL로 변환
+        iconHtml = `<img src="${iconUrl}" alt="${weather.condition || ''}" style="width: 32px; height: 32px; object-fit: contain;" />`;
+    }
+    
+    // 온도와 날씨 조건 표시
+    const temp = weather.temperature !== null && weather.temperature !== undefined 
+        ? `${Math.round(weather.temperature)}°C` 
+        : '';
+    const condition = weather.condition || weather.description || '';
+    const dateLabel = weather.date || visitDate || '';
+    
+    weatherWidget.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 10px; flex: 1;">
+            <div style="font-size: 24px; line-height: 1;">
+                ${iconHtml}
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+                <div style="font-weight: 700; font-size: 18px; color: #1a1a1a; line-height: 1.2;">
+                    ${temp}
+                </div>
+                <div style="font-size: 12px; color: #666; line-height: 1.2;">
+                    ${condition}
+                </div>
+                ${dateLabel ? `<div style="font-size: 11px; color: #888; line-height: 1.2;">${dateLabel}</div>` : ''}
+            </div>
+        </div>
+    `;
+    
+    // 지도 컨테이너에 추가
+    const mapContainer = document.getElementById('map-container');
+    if (mapContainer) {
+        mapContainer.appendChild(weatherWidget);
+    }
+}
+
+// 전역으로 노출 (chatbot.js에서 사용)
+window.displayWeatherOnMap = displayWeatherOnMap;
+
 // 경로 범례 추가 함수
 function addRouteLegend() {
     // 기존 범례 제거
@@ -378,13 +619,9 @@ function addRouteLegend() {
             <div style="width: 20px; height: 4px; background: ${TRANSPORT_COLORS.TRANSIT_BUS}; margin-right: 8px; border-radius: 2px;"></div>
             <span>버스</span>
         </div>
-        <div style="display: flex; align-items: center; margin-bottom: 4px;">
+        <div style="display: flex; align-items: center;">
             <div style="width: 20px; height: 4px; background: ${TRANSPORT_COLORS.DRIVING}; margin-right: 8px; border-radius: 2px;"></div>
             <span>자동차</span>
-        </div>
-        <div style="display: flex; align-items: center;">
-            <div style="width: 20px; height: 4px; background: ${TRANSPORT_COLORS.BICYCLING}; margin-right: 8px; border-radius: 2px;"></div>
-            <span>자전거</span>
         </div>
     `;
     
@@ -480,6 +717,23 @@ window.createEnhancedCard = function(place, containerId, className = "card") {
                 </div>
                 <p class="addr text-gray-600">${place.address || '주소 정보 없음'}</p>
                 ${place.description ? `<p class="desc text-gray-500">${place.description}</p>` : ''}
+                ${place.weather_info ? `
+                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 6px 8px; background: rgba(59, 130, 246, 0.1); border-radius: 8px;">
+                        ${place.weather_info.icon ? (() => {
+                            // 아이콘 URL 처리 (Google Weather API는 전체 URL, OpenWeatherMap은 코드만)
+                            const icon = place.weather_info.icon;
+                            const iconType = place.weather_info.icon_type;
+                            // icon_type이 없거나 google이거나 http로 시작하면 전체 URL로 간주
+                            const iconUrl = (!iconType || iconType === 'google' || icon.startsWith('http')) 
+                                ? icon  // Google Weather API: 전체 URL 사용
+                                : `https://openweathermap.org/img/wn/${icon}@2x.png`;  // OpenWeatherMap: 코드를 URL로 변환
+                            return `<img src="${iconUrl}" alt="${place.weather_info.condition || ''}" style="width: 24px; height: 24px;" />`;
+                        })() : '🌤'}
+                        <span style="font-weight: 600; color: #1a1a1a; font-size: 14px;">${place.weather_info.temperature !== null && place.weather_info.temperature !== undefined ? `${place.weather_info.temperature}°C` : ''}</span>
+                        <span style="color: #666; font-size: 13px;">${place.weather_info.condition || place.weather_info.description || ''}</span>
+                        ${place.weather_info.humidity !== null && place.weather_info.humidity !== undefined ? `<span style="color: #888; font-size: 12px; margin-left: 4px;">습도 ${place.weather_info.humidity}%</span>` : ''}
+                    </div>
+                ` : ''}
             </div>
         </a>
     `;
@@ -555,6 +809,42 @@ document.addEventListener('DOMContentLoaded', () => {
                         chatWindow.appendChild(msgDiv);
                         chatWindow.scrollTop = chatWindow.scrollHeight;
                     }
+                }
+                
+                // 서버에서 받은 경로 좌표 정보로 지도에 경로 그리기
+                if (data.route_paths && window.map) {
+                    // 경로 좌표 정보 출력 (요약 + 전체 데이터)
+                    const totalSegments = data.route_paths ? data.route_paths.length : 0;
+                    const totalSteps = data.route_paths ? data.route_paths.reduce((sum, seg) => sum + (seg ? seg.length : 0), 0) : 0;
+                    const totalCoords = data.route_paths ? data.route_paths.reduce((sum, seg) => {
+                        return sum + (seg ? seg.reduce((s, step) => s + (step.path ? step.path.length : 0), 0) : 0);
+                    }, 0) : 0;
+                    console.log(`경로 좌표 정보 수신: ${totalSegments}개 구간, ${totalSteps}개 step, 총 ${totalCoords}개 좌표`);
+                    console.log('경로 좌표 정보:', data.route_paths);
+                    
+                    // window.polylines 초기화 (없으면 생성)
+                    if (!window.polylines) {
+                        window.polylines = [];
+                    }
+                    
+                    // 기존 경로 제거
+                    if (window.polylines && window.polylines.length > 0) {
+                        window.polylines.forEach(polyline => {
+                            if (polyline.setMap) {
+                                polyline.setMap(null);
+                            }
+                        });
+                        window.polylines = [];
+                    }
+                    
+                    // 서버에서 받은 경로 좌표 정보로 경로 그리기
+                    drawRouteFromServerData(data.route_paths);
+                } else {
+                    console.warn('경로 그리기 조건 불만족:', {
+                        hasRoutePaths: !!data.route_paths,
+                        hasMap: !!window.map,
+                        routePathsLength: data.route_paths ? data.route_paths.length : 0
+                    });
                 }
             } catch (error) {
                 console.error('경로 안내 오류:', error);

@@ -59,6 +59,8 @@ class RoutingAgent(BaseAgent):
         destination = input_data.get("destination")
         mode = input_data.get("mode", "transit")
         optimize_waypoints = input_data.get("optimize_waypoints", True)
+        preferred_modes = input_data.get("preferred_modes")  # 대안 교통수단 리스트
+        user_transportation = input_data.get("user_transportation")  # 원본 입력값
         
         # 경로 최적화 실행
         result = await self.maps_tool.execute(
@@ -66,7 +68,9 @@ class RoutingAgent(BaseAgent):
             origin=origin,
             destination=destination,
             mode=mode,
-            optimize_waypoints=optimize_waypoints
+            optimize_waypoints=optimize_waypoints,
+            preferred_modes=preferred_modes,  # 대안 교통수단 전달
+            user_transportation=user_transportation  # 원본 입력값 전달
         )
         
         return {
@@ -97,7 +101,7 @@ class RoutingAgent(BaseAgent):
             return False
         
         mode = input_data.get("mode", "transit")
-        valid_modes = ["driving", "walking", "transit", "bicycling"]
+        valid_modes = ["driving", "walking", "transit"]  # 자전거 제외
         if mode not in valid_modes:
             return False
         
@@ -121,12 +125,10 @@ class RoutingAgent(BaseAgent):
         if len(coords_with_indices) < 3: return places
         indices, coords = zip(*coords_with_indices)
 
-        # [최종 수정] 이동수단에 따른 고정 반경(eps) 설정
+        # [최종 수정] 이동수단에 따른 고정 반경(eps) 설정 (자전거 제외)
         if user_transportation == "도보":
             eps_km = 1.3 # 반경 1.3km
-        elif user_transportation == "자전거":
-            eps_km = 3 # 반경 3km
-        else: # 자동차, 지하철, 버스 등
+        else: # 자동차, 지하철, 버스 등 (자전거 제외)
             eps_km = 10.0 # 반경 10km
             
         min_samples = 3 # 군집을 이루는 최소 장소 수

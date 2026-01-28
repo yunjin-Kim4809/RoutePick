@@ -18,6 +18,7 @@ class Config:
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
     GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "") or os.getenv("OPENWEATHER_API_KEY", "")
 
     # LLM 설정
     LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
@@ -36,6 +37,7 @@ class Config:
             "api_key": cls.TAVILY_API_KEY,
             "google_maps_api_key": cls.GOOGLE_MAPS_API_KEY,
             "openai_api_key": cls.OPENAI_API_KEY,
+            "weather_api_key": cls.WEATHER_API_KEY,
             "llm_model": cls.LLM_MODEL,
             "max_results": cls.DEFAULT_MAX_RESULTS,
             "min_rating": cls.DEFAULT_MIN_RATING,
