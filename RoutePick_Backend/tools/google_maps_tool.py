@@ -37,7 +37,6 @@ class GoogleMapsTool(BaseTool):
                 return "***"
             return f"{key[:4]}...{key[-4:]}"
         
-        # 후보 키 우선순위: google_maps_api_key > 환경변수 GOOGLE_MAPS_API_KEY > api_key
         candidate_keys = [
             ("google_maps_api_key", self.config.get("google_maps_api_key")),
             ("env:GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY")),
@@ -460,6 +459,9 @@ class GoogleMapsTool(BaseTool):
             }
         """
         try:
+            # 사용자가 지정한 출발 일시(문자열)를 받아 Distance Matrix 등에 활용할 수 있도록 저장
+            # 형식 예시: "2026-01-30T10:00:00"
+            self._departure_time_str = kwargs.get("departure_time")
             if not self.validate_params(places=places):
                 return {
                     "success": False,
@@ -512,8 +514,33 @@ class GoogleMapsTool(BaseTool):
             # 최적화된 경로로 Directions API 호출
             # preferred_modes가 있으면 각 구간별로 우선순위에 따라 시도
             directions, total_duration, total_distance = await self._get_optimized_route_directions(
-                optimized_places, origin, destination, mode, preferred_modes, user_transportation
+                optimized_places, origin, destination, mode, preferred_modes, user_transportation, _recursion_depth=0
             )
+            
+            # 결과 검증: directions가 비어있거나 모든 구간에 에러가 있으면 실패로 처리
+            has_valid_directions = False
+            error_messages = []
+            
+            if directions:
+                for direction in directions:
+                    if direction.get("error"):
+                        error_messages.append(f"{direction.get('from')} → {direction.get('to')}: {direction.get('error')}")
+                    elif direction.get("steps") or direction.get("duration", 0) > 0:
+                        has_valid_directions = True
+            
+            # 유효한 경로가 하나도 없으면 실패로 처리 (Agent 반복 호출 방지)
+            if not has_valid_directions and directions:
+                error_summary = "; ".join(error_messages[:3])  # 최대 3개 에러만 표시
+                if len(error_messages) > 3:
+                    error_summary += f" 외 {len(error_messages) - 3}개 구간 실패"
+                return {
+                    "success": False,
+                    "optimized_route": optimized_places,
+                    "total_duration": 0,
+                    "total_distance": 0,
+                    "directions": directions,
+                    "error": f"모든 구간의 경로 계산에 실패했습니다. {error_summary}"
+                }
             
             return {
                 "success": True,
@@ -521,19 +548,20 @@ class GoogleMapsTool(BaseTool):
                 "total_duration": total_duration,
                 "total_distance": total_distance,
                 "directions": directions,
-                "error": None
+                "error": None if has_valid_directions else "일부 구간의 경로를 찾지 못했습니다."
             }
             
         except Exception as e:
-            # 실패하더라도 최소한의 데이터는 반환하여 시스템이 멈추지 않게 함
-            print(f"⚠️  Google Maps API 실행 중 오류 발생 (무시하고 진행): {e}")
+            # 실패 시 명확한 에러 메시지와 함께 실패 반환 (Agent 반복 호출 방지)
+            error_msg = str(e)
+            print(f"❌ Google Maps API 실행 중 오류 발생: {error_msg}")
             return {
-                "success": True,
-                "optimized_route": places,
+                "success": False,
+                "optimized_route": places if places else [],
                 "total_duration": 0,
                 "total_distance": 0,
                 "directions": [],
-                "error": str(e)
+                "error": f"경로 계산 중 오류가 발생했습니다: {error_msg}"
             }
     
     def get_schema(self) -> Dict[str, Any]:
@@ -610,7 +638,6 @@ class GoogleMapsTool(BaseTool):
         
         loop = asyncio.get_event_loop()
         try:
-            # 지오코딩 요청 후보 구성 (한국 한정 파라미터 제거)
             requests = [{"address": normalized_address}]
             
             for req in requests:
@@ -963,7 +990,7 @@ class GoogleMapsTool(BaseTool):
                     waypoints=waypoints,
                     optimize_waypoints=True,
                     mode=mode,
-                    language='ko'  # 한국어 설정
+                    language='ko'
                 )
             
             directions_result = await loop.run_in_executor(None, call_directions)
@@ -1307,10 +1334,23 @@ class GoogleMapsTool(BaseTool):
             return None
         
         try:
-            # 현재 시간 또는 여행 시작 시간을 departure_time으로 설정
-            # 대중교통은 시간에 따라 소요 시간이 달라지므로 현재 시간 기준으로 계산
+            # 출발 시간 설정:
+            # - 프론트에서 전달된 사용자 시작일/시간(departure_time)을 우선 사용
+            # - 없으면 현재 시간을 사용
             import datetime
-            departure_time = datetime.datetime.now()
+            departure_time = None
+            dt_raw = getattr(self, "_departure_time_str", None)
+            if isinstance(dt_raw, str) and dt_raw:
+                try:
+                    # ISO 형식 또는 "YYYY-MM-DD HH:MM" 형식 처리
+                    if "T" in dt_raw:
+                        departure_time = datetime.datetime.fromisoformat(dt_raw)
+                    else:
+                        departure_time = datetime.datetime.strptime(dt_raw, "%Y-%m-%d %H:%M")
+                except Exception:
+                    departure_time = None
+            if departure_time is None:
+                departure_time = datetime.datetime.now()
 
             # 모든 좌표를 문자열로 변환 (coordinates 기준)
             coord_strings = [f"{coord[0]},{coord[1]}" for coord in coordinates]
@@ -1542,7 +1582,8 @@ class GoogleMapsTool(BaseTool):
         destination: Optional[Dict[str, Any]],
         mode: str,
         preferred_modes: Optional[List[str]] = None,
-        user_transportation: Optional[str] = None
+        user_transportation: Optional[str] = None,
+        _recursion_depth: int = 0  # 재귀 호출 방지 플래그
     ) -> Tuple[List[Dict[str, Any]], int, int]:
         """
         최적화된 경로의 전체 Directions 정보를 한 번의 API 호출로 획득
@@ -1552,10 +1593,16 @@ class GoogleMapsTool(BaseTool):
             origin: 출발지
             destination: 도착지
             mode: 이동 수단
+            _recursion_depth: 재귀 호출 깊이 (내부 사용, 최대 1회만 허용)
             
         Returns:
             (directions 리스트, 총 소요 시간, 총 거리)
         """
+        # 재귀 호출 방지: 이미 한 번 호출되었다면 더 이상 재귀하지 않음
+        if _recursion_depth > 0:
+            print(f"⚠️  재귀 호출 방지: _get_optimized_route_directions가 이미 호출되었습니다.")
+            return [], 0, 0
+        
         if len(places) < 2:
             return [], 0, 0
         
@@ -1657,10 +1704,10 @@ class GoogleMapsTool(BaseTool):
         
         if use_segment_by_segment:
             print(f"  ℹ️ {reason} 구간별로 계산합니다.")
+            # 재귀 호출 방지: _calculate_directions는 독립적으로 실행되므로 재귀 깊이 전달 불필요
             return await self._calculate_directions(places, origin, destination, mode, preferred_modes, user_transportation)
         
         # Waypoints가 있고, 대중교통이 아니고, 10개 이하인 경우만 일괄 요청 시도
-        # (실제로는 이 경우가 거의 없지만, 혹시 모를 경우를 대비)
         loop = asyncio.get_event_loop()
         # Directions API에는 문자열이 아닌 (lat, lng) 튜플을 그대로 전달하여
         # 좌표가 문자열 포맷 과정에서 잘리는 일을 방지한다.
@@ -1680,14 +1727,14 @@ class GoogleMapsTool(BaseTool):
                             waypoints=waypoints,
                             optimize_waypoints=False,  # 이미 최적화되어 있으므로 False
                             mode=primary_mode,
-                            language='ko'  # 한국어 설정
+                            language='ko'  
                         )
                     else:
                         return self.client.directions(
                             origin=origin_tuple,
                             destination=dest_tuple,
                             mode=primary_mode,
-                            language='ko'  # 한국어 설정
+                            language='ko' 
                         )
                 
                 directions_result = await loop.run_in_executor(None, call_directions)
@@ -1782,6 +1829,7 @@ class GoogleMapsTool(BaseTool):
                     break
         
         # 폴백: 개별 구간별로 Directions API 호출
+        # 재귀 호출 방지: _calculate_directions는 독립적으로 실행되므로 재귀 깊이 전달 불필요
         return await self._calculate_directions(places, origin, destination, mode, preferred_modes, user_transportation)
     
     async def _calculate_directions(
@@ -1977,54 +2025,7 @@ class GoogleMapsTool(BaseTool):
                                     }
                                 }
                         
-                        # 이 모드로 경로를 찾지 못했으면 직선 거리로 폴백 시도
-                        # 매우 가까운 거리일 때는 직선 경로로 처리
-                        import math
-                        R = 6371000  # 지구 반지름 (미터)
-                        lat1, lon1 = from_coord[0], from_coord[1]
-                        lat2, lon2 = to_coord[0], to_coord[1]
-                        phi1 = math.radians(lat1)
-                        phi2 = math.radians(lat2)
-                        delta_phi = math.radians(lat2 - lat1)
-                        delta_lambda = math.radians(lon2 - lon1)
-                        a = math.sin(delta_phi / 2) ** 2 + \
-                            math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-                        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-                        straight_distance = R * c  # 미터 단위
-                        
-                        # 500m 이내이면 직선 경로로 처리 (walking 모드일 때만)
-                        if straight_distance <= 500 and try_mode == 'walking':
-                            # 도보 속도: 약 4km/h = 1.11m/s
-                            walking_speed = 1.11  # m/s
-                            estimated_duration = int(straight_distance / walking_speed)  # 초
-                            
-                            print(f"  ℹ️ 매우 가까운 거리({straight_distance:.0f}m)로 직선 경로 사용: {from_place.get('name')} → {to_place.get('name')}")
-                            
-                            return {
-                                "from": from_place.get("name", "Unknown"),
-                                "to": to_place.get("name", "Unknown"),
-                                "from_address": from_place.get("address", ""),
-                                "to_address": to_place.get("address", ""),
-                                "duration": estimated_duration,
-                                "distance": int(straight_distance),
-                                "duration_text": f"{estimated_duration // 60}분" if estimated_duration >= 60 else f"{estimated_duration}초",
-                                "distance_text": f"{straight_distance:.0f}m" if straight_distance < 1000 else f"{straight_distance / 1000:.1f}km",
-                                "steps": [{
-                                    "instruction": f"직선 경로로 이동 ({straight_distance:.0f}m)",
-                                    "distance": {"value": int(straight_distance), "text": f"{straight_distance:.0f}m" if straight_distance < 1000 else f"{straight_distance / 1000:.1f}km"},
-                                    "duration": {"value": estimated_duration, "text": f"{estimated_duration // 60}분" if estimated_duration >= 60 else f"{estimated_duration}초"},
-                                    "path": [
-                                        {"lat": lat1, "lng": lon1},
-                                        {"lat": lat2, "lng": lon2}
-                                    ]
-                                }],
-                                "mode": try_mode,
-                                "start_location": {"lat": lat1, "lng": lon1},
-                                "end_location": {"lat": lat2, "lng": lon2},
-                                "is_fallback": True
-                            }
-                        
-                        # 직선 폴백이 적용되지 않으면 다음 모드 시도
+                        # Directions API 응답이 비어있으면 다음 모드 시도
                         last_error = "Directions API 응답이 비어있습니다."
                         self._log_directions_failure(origin_str, dest_str, try_mode, response=directions_result)
                         break
@@ -2086,6 +2087,16 @@ class GoogleMapsTool(BaseTool):
         total_duration = sum(d.get("duration", 0) for d in valid_directions)
         total_distance = sum(d.get("distance", 0) for d in valid_directions)
         
+        # 모든 구간이 실패한 경우를 감지하여 상위로 알림
+        all_failed = len(valid_directions) > 0 and all(
+            d.get("error") or (not d.get("steps") and d.get("duration", 0) == 0)
+            for d in valid_directions
+        )
+        
+        if all_failed and valid_directions:
+            # 모든 구간 실패 시 로깅 (하지만 빈 리스트는 반환하지 않음 - 최소한 에러 정보는 포함)
+            print(f"⚠️  모든 구간({len(valid_directions)}개)의 경로 계산에 실패했습니다.")
+        
         return valid_directions, total_duration, total_distance
     
     async def get_weather_info(
@@ -2126,7 +2137,8 @@ class GoogleMapsTool(BaseTool):
                 "date": date or datetime.now().strftime("%Y-%m-%d")
             }
 
-        async def fetch_openweather(session: aiohttp.ClientSession, target_date: datetime) -> Optional[Dict[str, Any]]:
+        async def fetch_openweather_current(session: aiohttp.ClientSession, target_date: datetime) -> Optional[Dict[str, Any]]:
+            """현재 날씨 정보 가져오기 (오늘 날짜인 경우)"""
             try:
                 url = "https://api.openweathermap.org/data/2.5/weather"
                 params = {
@@ -2162,6 +2174,112 @@ class GoogleMapsTool(BaseTool):
                     }
             except Exception:
                 return None
+        
+        async def fetch_openweather_forecast(session: aiohttp.ClientSession, target_date: datetime) -> Optional[Dict[str, Any]]:
+            """5일/3시간 예보에서 특정 날짜의 날씨 정보 가져오기"""
+            try:
+                url = "https://api.openweathermap.org/data/2.5/forecast"
+                params = {
+                    "lat": float(lat),
+                    "lon": float(lng),
+                    "appid": self.openweather_api_key,
+                    "units": "metric",
+                    "lang": "kr"
+                }
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        return None
+                    data = await response.json()
+                    
+                    forecast_list = data.get("list", [])
+                    if not forecast_list:
+                        return None
+                    
+                    # 목표 날짜의 날짜 부분만 추출 (시간 제외)
+                    target_date_only = target_date.date()
+                    
+                    # 해당 날짜의 예보 중 가장 가까운 시간대 찾기 (오후 시간대 우선)
+                    best_match = None
+                    min_time_diff = None
+                    
+                    # 먼저 정확히 일치하는 날짜의 예보 찾기
+                    for forecast_item in forecast_list:
+                        # 예보 시간 파싱
+                        dt_txt = forecast_item.get("dt_txt", "")
+                        if not dt_txt:
+                            continue
+                        
+                        try:
+                            forecast_datetime = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
+                            forecast_date = forecast_datetime.date()
+                            
+                            # 날짜가 일치하는 경우
+                            if forecast_date == target_date_only:
+                                # 오후 시간대(12시~18시) 우선 선택, 없으면 가장 가까운 시간대
+                                forecast_hour = forecast_datetime.hour
+                                time_diff = abs((forecast_datetime - target_date).total_seconds())
+                                
+                                # 오후 시간대(12~18시)에 가중치 부여
+                                if 12 <= forecast_hour <= 18:
+                                    time_diff = time_diff * 0.5  # 오후 시간대 우선
+                                
+                                if min_time_diff is None or time_diff < min_time_diff:
+                                    min_time_diff = time_diff
+                                    best_match = forecast_item
+                        except ValueError:
+                            continue
+                    
+                    # 해당 날짜의 예보가 없으면 가장 가까운 날짜 찾기
+                    if best_match is None:
+                        for forecast_item in forecast_list:
+                            dt_txt = forecast_item.get("dt_txt", "")
+                            if not dt_txt:
+                                continue
+                            
+                            try:
+                                forecast_datetime = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
+                                forecast_date = forecast_datetime.date()
+                                
+                                # 날짜 차이 계산
+                                date_diff = abs((forecast_date - target_date_only).days)
+                                
+                                if date_diff <= 5:  # 5일 이내
+                                    # 날짜 차이를 초 단위로 변환하여 비교
+                                    date_diff_seconds = date_diff * 86400  # 하루 = 86400초
+                                    if min_time_diff is None or date_diff_seconds < min_time_diff:
+                                        min_time_diff = date_diff_seconds
+                                        best_match = forecast_item
+                            except ValueError:
+                                continue
+                    
+                    if best_match is None:
+                        return None
+                    
+                    # 예보 데이터 파싱
+                    weather_list = best_match.get("weather", []) or []
+                    first_weather = weather_list[0] if weather_list else {}
+                    main_data = best_match.get("main", {}) or {}
+                    temp = main_data.get("temp")
+                    humidity = main_data.get("humidity")
+                    wind_data = best_match.get("wind", {}) or {}
+                    wind_speed = wind_data.get("speed")
+                    description = first_weather.get("description", "")
+                    condition = first_weather.get("main", "")
+                    icon = first_weather.get("icon", "")
+                    
+                    return {
+                        "temperature": round(float(temp), 1) if temp is not None else None,
+                        "condition": condition or "정보 없음",
+                        "description": description or condition or "정보 없음",
+                        "humidity": int(humidity) if humidity is not None else None,
+                        "wind_speed": round(float(wind_speed), 1) if wind_speed is not None else None,
+                        "icon": icon,
+                        "icon_type": "openweather",
+                        "date": target_date.strftime("%Y-%m-%d")
+                    }
+            except Exception as e:
+                print(f"⚠️ 예보 API 호출 중 오류: {e}")
+                return None
 
         try:
             if lat is None or lng is None:
@@ -2182,19 +2300,44 @@ class GoogleMapsTool(BaseTool):
             if date:
                 try:
                     target_date = datetime.strptime(date, "%Y-%m-%d")
+                    # 날짜만 있고 시간이 없으므로 오후 시간(14시)으로 설정 (일반적인 여행 시간)
+                    target_date = target_date.replace(hour=14, minute=0, second=0)
                 except:
                     try:
                         target_date = datetime.strptime(date.split()[0], "%Y-%m-%d")
+                        target_date = target_date.replace(hour=14, minute=0, second=0)
                     except:
                         target_date = datetime.now()
             else:
                 target_date = datetime.now()
-
+            
+            # 오늘 날짜인지 확인 (날짜만 비교)
+            today = datetime.now().date()
+            target_date_only = target_date.date()
+            is_today = target_date_only == today
+            
+            print(f"🌤️ 날씨 조회 요청: 날짜={target_date.strftime('%Y-%m-%d')}, 오늘 여부={is_today}")
+            
             # OpenWeather 호출
             async with aiohttp.ClientSession() as session:
-                result = await fetch_openweather(session, target_date)
-                if result:
-                    return result
+                # 오늘 날짜면 현재 날씨 API 사용, 미래 날짜면 예보 API 사용
+                if is_today:
+                    result = await fetch_openweather_current(session, target_date)
+                    if result:
+                        print(f"🌤️ 현재 날씨 정보 조회 완료: {target_date.strftime('%Y-%m-%d')}")
+                        return result
+                else:
+                    # 미래 날짜면 예보 API 사용
+                    result = await fetch_openweather_forecast(session, target_date)
+                    if result:
+                        print(f"🌤️ 예보 날씨 정보 조회 완료: {target_date.strftime('%Y-%m-%d')}")
+                        return result
+                    else:
+                        # 예보가 없으면 현재 날씨로 폴백
+                        print(f"⚠️ {target_date.strftime('%Y-%m-%d')} 예보 정보가 없어 현재 날씨로 폴백합니다.")
+                        result = await fetch_openweather_current(session, target_date)
+                        if result:
+                            return result
 
             return {
                 "temperature": None,

@@ -15,6 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from typing import Any, Dict, List, Optional
 from .base_tool import BaseTool
 from .google_maps_tool import GoogleMapsTool
+from .tmap_tool import TMapTool
 from config.config import Config
 
 load_dotenv()
@@ -22,6 +23,10 @@ load_dotenv()
 config = Config.get_agent_config()
 config["api_key"] = os.getenv("GOOGLE_MAPS_API_KEY") 
 maptool = GoogleMapsTool(config=config)
+tmaptool = TMapTool(config=config)
+
+# check_routing 결과 캐시 (같은 장소 조합에 대한 중복 호출 방지)
+_routing_cache = {}
 
 @tool
 async def check_routing(
@@ -34,6 +39,7 @@ async def check_routing(
     주어진 장소들에 대해 경로 최적화를 실행합니다.
     
     **중요: 이 함수를 호출할 때는 반드시 'places' 파라미터를 전달해야 합니다.**
+    **주의: 이미 검증한 경로는 다시 확인하지 마세요. 캐시된 결과를 사용합니다.**
     
     Args:
         places: 장소 정보 리스트 (필수, 각 장소는 name, address, coordinates 등을 포함)
@@ -55,14 +61,129 @@ async def check_routing(
             "directions": [],
             "error": "places 파라미터가 필수입니다."
         }
+    
+    # 좌표가 동일하거나 매우 가까운 장소 사전 필터링
+    import math
+    def haversine_distance(lat1, lon1, lat2, lon2):
+        """두 지점 간 거리 계산 (미터)"""
+        R = 6371000  # 지구 반지름 (미터)
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lon2 - lon1)
+        a = math.sin(delta_phi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        return R * c
+    
+    # 장소가 2개이고 매우 가까운 경우 (10m 이내) 직접 경로 반환
+    if len(places) == 2:
+        coords1 = places[0].get("coordinates", {})
+        coords2 = places[1].get("coordinates", {})
+        if coords1.get("lat") and coords1.get("lng") and coords2.get("lat") and coords2.get("lng"):
+            try:
+                lat1, lng1 = float(coords1["lat"]), float(coords1["lng"])
+                lat2, lng2 = float(coords2["lat"]), float(coords2["lng"])
+                distance_m = haversine_distance(lat1, lng1, lat2, lng2)
+                if distance_m < 10:
+                    print(f"✅ [check_routing] 두 지점이 매우 가까움 ({distance_m:.1f}m), 직접 경로 반환 (API 호출 생략)")
+                    return {
+                        "success": True,
+                        "total_duration": 0,
+                        "total_distance": int(distance_m),
+                        "directions": [{
+                            "from": places[0].get("name", "Unknown"),
+                            "to": places[1].get("name", "Unknown"),
+                            "duration_text": "즉시",
+                            "distance_text": f"{int(distance_m)}m",
+                            "mode": mode,
+                            "error": None
+                        }],
+                        "mode": mode,
+                        "error": None
+                    }
+            except (ValueError, TypeError):
+                pass
+    
+    # 캐시 키 생성 (장소 이름과 좌표, mode 기반)
+    import hashlib
+    places_key = []
+    for place in places:
+        coords = place.get("coordinates", {})
+        lat = coords.get('lat', '')
+        lng = coords.get('lng', '')
+        # 좌표를 소수점 4자리로 반올림하여 캐시 키 생성 (약 11m 정밀도)
+        try:
+            if lat and lng:
+                lat = round(float(lat), 4)
+                lng = round(float(lng), 4)
+        except (ValueError, TypeError):
+            pass
+        places_key.append(f"{place.get('name', '')}:{lat}:{lng}")
+    
+    # 장소 순서도 고려하여 캐시 키 생성
+    places_sorted_key = sorted(places_key)  # 순서 무관하게 같은 조합이면 같은 캐시 사용
+    cache_key_str = f"{mode}:{':'.join(places_sorted_key)}"
+    cache_key = hashlib.md5(cache_key_str.encode()).hexdigest()
+    
+    # 캐시 확인
+    if cache_key in _routing_cache:
+        cached_result = _routing_cache[cache_key]
+        print(f"✅ [check_routing] 캐시된 결과 사용 (동일한 장소 조합, 중복 호출 방지)")
+        return cached_result
 
-    # LLM 입력 컨텍스트 절약을 위해 결과를 경량화해서 반환
-    result = await maptool.execute(
-        places=places,
-        origin=origin,
-        destination=destination,
-        mode=mode
-    )
+    # 한국 내에서 도보/자동차 경로인 경우 T Map API 우선 사용
+    # 단, mode가 transit이면 T Map API 사용 안 함 (T Map은 대중교통 미지원)
+    use_tmap = False
+    if mode in ["walking", "driving"]:
+        # 장소 좌표가 한국 영역 내에 있는지 확인
+        is_korea = _is_in_korea(places)
+        if is_korea:
+            use_tmap = True
+            print(f"🗺️ [check_routing] 한국 내 경로 감지: T Map API 사용 ({mode})")
+    elif mode == "transit":
+        print(f"🚇 [check_routing] 대중교통 모드: Google Maps API 사용 (T Map API는 대중교통 미지원)")
+    
+    if use_tmap:
+        # T Map API 사용
+        tmap_mode = "walking" if mode == "walking" else "driving"
+        try:
+            result = await tmaptool.execute(
+                places=places,
+                origin=origin,
+                destination=destination,
+                mode=tmap_mode,
+                optimize_waypoints=False
+            )
+            
+            # T Map API 실패 시 Google Maps로 폴백
+            if not result.get("success"):
+                error_msg = result.get("error", "T Map API 호출 실패")
+                print(f"⚠️ [check_routing] T Map API 실패: {error_msg}")
+                
+                # 모든 구간이 실패했는지 확인
+                directions = result.get("directions", [])
+                all_failed = len(directions) > 0 and all(
+                    d.get("error") or (not d.get("steps") and d.get("duration", 0) == 0)
+                    for d in directions
+                )
+                
+                if all_failed or "API 키" in error_msg or "서비스 제공 지역" in error_msg:
+                    print(f"⚠️ [check_routing] T Map API 실패, Google Maps API로 폴백합니다.")
+                    use_tmap = False
+        except Exception as e:
+            print(f"❌ [check_routing] T Map API 예외 발생: {e}")
+            print(f"⚠️ [check_routing] T Map API 예외 발생, Google Maps API로 폴백합니다.")
+            use_tmap = False
+    
+    if not use_tmap:
+        # Google Maps API 사용 (대중교통 또는 한국 외 지역 또는 T Map 실패 시)
+        print(f"🗺️ [check_routing] Google Maps API 사용 ({mode})")
+        result = await maptool.execute(
+            places=places,
+            origin=origin,
+            destination=destination,
+            mode=mode
+        )
     
     # directions에서 step/path/raw 데이터 제거, 핵심 요약만 반환
     slim_directions = []
@@ -76,7 +197,7 @@ async def check_routing(
             "error": d.get("error")
         })
     
-    return {
+    final_result = {
         "success": result.get("success", False),
         "total_duration": result.get("total_duration", 0),
         "total_distance": result.get("total_distance", 0),
@@ -84,6 +205,72 @@ async def check_routing(
         "mode": mode,
         "error": result.get("error")
     }
+    
+    # 결과를 캐시에 저장 (최대 100개까지만 캐시 유지)
+    if len(_routing_cache) >= 100:
+        # 가장 오래된 항목 제거 (FIFO)
+        oldest_key = next(iter(_routing_cache))
+        del _routing_cache[oldest_key]
+    _routing_cache[cache_key] = final_result
+    
+    return final_result
+
+def _is_in_korea(places: List[Dict[str, Any]]) -> bool:
+    """
+    장소들이 한국 영역 내에 있는지 확인
+    
+    Args:
+        places: 장소 리스트
+        
+    Returns:
+        한국 영역 내에 있으면 True
+    """
+    if not places:
+        return False
+    
+    # 한국 영역 경계 (대략적인 범위)
+    KOREA_BOUNDS = {
+        "min_lat": 33.0,  # 제주도 남쪽
+        "max_lat": 38.6,  # DMZ 북쪽
+        "min_lng": 124.5,  # 서해
+        "max_lng": 132.0   # 동해
+    }
+    
+    has_valid_coords = False
+    korea_count = 0
+    non_korea_count = 0
+    
+    for place in places:
+        coords = place.get("coordinates")
+        if not coords:
+            continue
+        
+        lat = coords.get("lat")
+        lng = coords.get("lng")
+        
+        if lat is None or lng is None:
+            continue
+        
+        has_valid_coords = True
+        
+        # 한국 영역 확인
+        if (KOREA_BOUNDS["min_lat"] <= lat <= KOREA_BOUNDS["max_lat"] and
+            KOREA_BOUNDS["min_lng"] <= lng <= KOREA_BOUNDS["max_lng"]):
+            korea_count += 1
+        else:
+            non_korea_count += 1
+            # 한국 밖 장소가 하나라도 있으면 False
+            return False
+    
+    # 좌표가 있는 장소가 하나도 없으면 False (확인 불가)
+    if not has_valid_coords:
+        return False
+    
+    # 모든 좌표가 있는 장소가 한국 영역 내에 있으면 True
+    if korea_count > 0 and non_korea_count == 0:
+        return True
+    
+    return False
 
 class CourseCreationTool(BaseTool):
     """LLM을 사용한 맞춤형 코스 제작 Tool"""
@@ -119,6 +306,67 @@ class CourseCreationTool(BaseTool):
         
         # 경고 로그 출력 여부 (기본: 경고 표시)
         self.suppress_llm_warnings = self._resolve_warning_suppression()
+    
+    def _parse_visit_date(self, visit_date: str) -> Optional[str]:
+        """
+        방문 날짜 문자열을 YYYY-MM-DD 형식으로 파싱
+        
+        Args:
+            visit_date: 방문 날짜 문자열 (예: "오늘", "내일", "2025-01-29", "2025-01-29 ~ 2025-01-31")
+            
+        Returns:
+            YYYY-MM-DD 형식의 날짜 문자열 또는 None
+        """
+        if not visit_date:
+            return None
+        
+        from datetime import datetime, timedelta
+        
+        visit_date = visit_date.strip()
+        
+        # "오늘" 처리
+        if visit_date == "오늘" or visit_date.lower() == "today":
+            return datetime.now().strftime("%Y-%m-%d")
+        
+        # "내일" 처리
+        if visit_date == "내일" or visit_date.lower() == "tomorrow":
+            return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # 날짜 범위 처리 (예: "2025-01-29 ~ 2025-01-31")
+        if "~" in visit_date or "-" in visit_date:
+            # 첫 번째 날짜 추출
+            date_parts = visit_date.split("~")
+            if len(date_parts) > 1:
+                first_date = date_parts[0].strip()
+            else:
+                first_date = visit_date.split()[0] if visit_date.split() else visit_date
+            
+            # YYYY-MM-DD 형식인지 확인
+            try:
+                datetime.strptime(first_date, "%Y-%m-%d")
+                return first_date
+            except ValueError:
+                # 다른 형식 시도
+                try:
+                    parsed_date = datetime.strptime(first_date, "%Y/%m/%d")
+                    return parsed_date.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+        
+        # 직접 YYYY-MM-DD 형식인지 확인
+        try:
+            datetime.strptime(visit_date, "%Y-%m-%d")
+            return visit_date
+        except ValueError:
+            # 다른 형식 시도
+            try:
+                parsed_date = datetime.strptime(visit_date, "%Y/%m/%d")
+                return parsed_date.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        
+        # 파싱 실패 시 None 반환
+        return None
     
     def _resolve_warning_suppression(self) -> bool:
         """LLM 경고 로그 출력 여부 결정"""
@@ -226,28 +474,32 @@ class CourseCreationTool(BaseTool):
                 
                 # visit_date가 있으면 날씨 조회 시도 (location은 선택사항)
                 if visit_date:
-                    # 날짜에서 첫 번째 날짜만 추출 (YYYY-MM-DD 형식)
-                    date_str = visit_date.split()[0] if visit_date else None
+                    # 날짜 파싱 및 변환
+                    date_str = self._parse_visit_date(visit_date)
                     
-                    # 지역의 중심 좌표를 가져와서 날씨 조회 (한 번만)
-                    # 첫 번째 장소의 좌표를 사용
-                    if places and len(places) > 0:
-                        first_place = places[0]
-                        coords = first_place.get("coordinates")
-                        if coords and coords.get("lat") and coords.get("lng"):
-                            lat = float(coords.get("lat"))
-                            lng = float(coords.get("lng"))
-                            # 지역 날씨 한 번만 조회
-                            single_weather = await maptool.get_weather_info(lat, lng, date_str)
-                            # 모든 장소에 동일한 날씨 정보 적용
-                            for idx in range(len(places)):
-                                weather_info[idx] = single_weather
-                            location_name = location or f"{lat:.2f},{lng:.2f}"
-                            print(f"🌤️ 지역 날씨 정보 조회 완료: {location_name} - {single_weather.get('temperature')}°C, {single_weather.get('condition')}")
+                    if date_str:
+                        # 지역의 중심 좌표를 가져와서 날씨 조회 (한 번만)
+                        # 첫 번째 장소의 좌표를 사용
+                        if places and len(places) > 0:
+                            first_place = places[0]
+                            coords = first_place.get("coordinates")
+                            if coords and coords.get("lat") and coords.get("lng"):
+                                lat = float(coords.get("lat"))
+                                lng = float(coords.get("lng"))
+                                # 지역 날씨 한 번만 조회 (사용자가 설정한 날짜 기준)
+                                single_weather = await maptool.get_weather_info(lat, lng, date_str)
+                                # 모든 장소에 동일한 날씨 정보 적용
+                                for idx in range(len(places)):
+                                    weather_info[idx] = single_weather
+                                location_name = location or f"{lat:.2f},{lng:.2f}"
+                                weather_date = single_weather.get('date', date_str)
+                                print(f"🌤️ 지역 날씨 정보 조회 완료 ({weather_date}): {location_name} - {single_weather.get('temperature')}°C, {single_weather.get('condition')}")
+                            else:
+                                print(f"⚠️ 첫 번째 장소에 좌표 정보가 없어 날씨 정보를 가져올 수 없습니다.")
                         else:
-                            print(f"⚠️ 첫 번째 장소에 좌표 정보가 없어 날씨 정보를 가져올 수 없습니다.")
+                            print(f"⚠️ 장소 리스트가 비어있어 날씨 정보를 가져올 수 없습니다.")
                     else:
-                        print(f"⚠️ 장소 리스트가 비어있어 날씨 정보를 가져올 수 없습니다.")
+                        print(f"⚠️ 방문 날짜를 파싱할 수 없습니다: {visit_date}")
                 else:
                     print(f"⚠️ 방문 날짜 정보가 없어 날씨 정보를 가져오지 않습니다.")
             except Exception as e:
@@ -362,6 +614,8 @@ class CourseCreationTool(BaseTool):
 # Constraints
 1. 저장된 장소(⭐ 표시) 최우선 포함
 2. check_routing tool로 거리/시간 계산 (coordinates 필수: {{"lat":숫자,"lng":숫자}})
+   **중요: 같은 장소 조합에 대해서는 한 번만 check_routing을 호출하세요. 이미 검증한 경로는 다시 확인하지 마세요.**
+   **중요: 좌표가 동일하거나 매우 가까운 장소(10m 이내)는 check_routing을 호출하지 말고 직접 경로로 처리하세요.**
 3. 좌표 기반으로 가까운 장소 우선 그룹화
 4. 이동 시간 30분 이내
 5. 도보 우선 (차이 20분 이내면 도보)
@@ -372,7 +626,7 @@ class CourseCreationTool(BaseTool):
 2. 테마에 맞는 추가 장소 선정
 3. 식당/카페 연속 방문 체크 및 재배치
 4. 거리 최소화 순서로 배열
-5. check_routing으로 경로 검증
+5. check_routing으로 경로 검증 (중요: 같은 장소 조합은 한 번만 검증하세요. 이미 검증한 경로는 다시 확인하지 마세요.)
 6. JSON 출력
 
 # Output (JSON만)
@@ -514,7 +768,7 @@ class CourseCreationTool(BaseTool):
             tools=self.tools, 
             verbose=True,
             handle_parsing_errors=handle_tool_error,
-            max_iterations=15,  # 최대 반복 횟수 증가 (10 -> 15)
+            max_iterations=10,  # 최대 반복 횟수 (불필요한 반복 방지)
             return_intermediate_steps=True,  # 중간 단계 반환 (디버깅용)
             max_execution_time=300  # 최대 실행 시간 5분
         )
@@ -536,6 +790,8 @@ class CourseCreationTool(BaseTool):
 check_routing(places=[장소리스트], mode="transit")
 - places 파라미터는 반드시 포함해야 합니다.
 - 각 장소는 coordinates 필드를 포함해야 합니다: {"name":"장소명","coordinates":{"lat":위도,"lng":경도}}
+- **중요: 같은 장소 조합에 대해서는 한 번만 check_routing을 호출하세요. 이미 검증한 경로는 다시 확인하지 마세요.**
+- **중요: 좌표가 동일하거나 매우 가까운 장소(10m 이내)는 check_routing을 호출하지 말고 직접 경로로 처리하세요.**
 """
         
         allowed_indices = list(range(len(places)))
@@ -622,30 +878,49 @@ check_routing(places=[장소리스트], mode="transit")
         if not response_content:
             raise ValueError("LLM이 빈 응답을 반환했습니다. Agent가 작업을 완료하지 못했을 수 있습니다.")
         
-        try:
-            result = self._JSON_verification(response_content)
-        except ValueError as json_error:
-            # JSON 파싱 실패 시 더 자세한 정보 제공
-            error_msg = str(json_error)
-            print(f"❌ JSON 파싱 실패: {error_msg}")
-            
-            # 중간 단계 정보 출력
-            if 'intermediate_steps' in planning_result:
-                print(f"   Agent 실행 단계: {len(planning_result.get('intermediate_steps', []))}개")
-            
-            # 응답 내용 일부 출력
-            print(f"   응답 내용 (처음 500자): {response_content[:500]}")
-            
-            # 폴백: 최소한의 JSON 구조라도 생성 시도
-            print(f"   ⚠️ JSON 파싱 실패로 인해 기본 코스 구조를 생성합니다...")
-            # 빈 코스 구조 반환 (나중에 검증 로직에서 처리)
+        # LangChain Agent가 최대 반복 횟수 초과로 중단될 경우,
+        # output 필드에 'Agent stopped due to max iterations.' 같은 문장을 그대로 넣어 주는 경우가 있다.
+        # 이 문자열은 JSON이 아니므로, JSON 파싱을 시도하기 전에 특별 처리하여
+        # 불필요한 JSON 파싱 에러를 피하고, 사용자에게는 완만한 폴백 코스를 제공한다.
+        lower_output = response_content.lower()
+        if (
+            "max iterations" in lower_output
+            or "max_iterations" in lower_output
+            or "agent stopped" in lower_output
+        ):
+            print("⚠️ Agent가 최대 반복 횟수로 인해 중단되었습니다. 기본 코스 구조를 반환합니다.")
             result = {
                 "selected_places": [],
                 "sequence": [],
                 "estimated_duration": {},
-                "course_description": "코스 생성 중 오류가 발생했습니다.",
-                "reasoning": f"JSON 파싱 오류: {error_msg}"
+                "course_description": "코스 생성 중 Agent가 최대 반복 횟수에 도달하여 기본 코스를 반환했습니다.",
+                "reasoning": "Agent stopped due to max iterations.",
             }
+        else:
+            try:
+                result = self._JSON_verification(response_content)
+            except ValueError as json_error:
+                # JSON 파싱 실패 시 더 자세한 정보 제공
+                error_msg = str(json_error)
+                print(f"❌ JSON 파싱 실패: {error_msg}")
+                
+                # 중간 단계 정보 출력
+                if 'intermediate_steps' in planning_result:
+                    print(f"   Agent 실행 단계: {len(planning_result.get('intermediate_steps', []))}개")
+                
+                # 응답 내용 일부 출력
+                print(f"   응답 내용 (처음 500자): {response_content[:500]}")
+                
+                # 폴백: 최소한의 JSON 구조라도 생성 시도
+                print(f"   ⚠️ JSON 파싱 실패로 인해 기본 코스 구조를 생성합니다...")
+                # 빈 코스 구조 반환 (나중에 검증 로직에서 처리)
+                result = {
+                    "selected_places": [],
+                    "sequence": [],
+                    "estimated_duration": {},
+                    "course_description": "코스 생성 중 오류가 발생했습니다.",
+                    "reasoning": f"JSON 파싱 오류: {error_msg}"
+                }
 
         # ============================================================
         # [최종 버그 수정] LLM이 반환한 인덱스 유효성 검증

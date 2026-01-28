@@ -1,15 +1,17 @@
 """
 Routing Agent
-Google Maps Tool을 사용하여 경로를 최적화합니다.
+Google Maps Tool과 T Map Tool을 사용하여 경로를 최적화합니다.
+한국 내에서는 T Map API를 우선 사용합니다.
 """
 # [신규] 필요한 라이브러리 import
 from typing import Any, Dict, List, Optional 
 from .base_agent import BaseAgent
 from tools.google_maps_tool import GoogleMapsTool
+from tools.tmap_tool import TMapTool
 
 
 class RoutingAgent(BaseAgent):
-    """경로 최적화 Agent - Google Maps Tool을 사용하여 동선 최적화"""
+    """경로 최적화 Agent - Google Maps Tool과 T Map Tool을 사용하여 동선 최적화"""
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
@@ -18,6 +20,7 @@ class RoutingAgent(BaseAgent):
         """
         super().__init__(name="RoutingAgent", config=config)
         self.maps_tool = GoogleMapsTool(config=config)
+        self.tmap_tool = TMapTool(config=config)
     
     async def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -61,17 +64,115 @@ class RoutingAgent(BaseAgent):
         optimize_waypoints = input_data.get("optimize_waypoints", True)
         preferred_modes = input_data.get("preferred_modes")  # 대안 교통수단 리스트
         user_transportation = input_data.get("user_transportation")  # 원본 입력값
+        departure_time = input_data.get("departure_time")  # 출발 일시 (ISO 문자열 등)
         
-        # 경로 최적화 실행
-        result = await self.maps_tool.execute(
-            places=places,
-            origin=origin,
-            destination=destination,
-            mode=mode,
-            optimize_waypoints=optimize_waypoints,
-            preferred_modes=preferred_modes,  # 대안 교통수단 전달
-            user_transportation=user_transportation  # 원본 입력값 전달
-        )
+        # 한국 내에서 도보/자동차 경로인 경우 T Map API 우선 사용
+        # 단, preferred_modes에 transit이 포함되어 있으면 T Map API 사용 안 함 (T Map은 대중교통 미지원)
+        use_tmap = False
+        tmap_error = None
+        
+        # preferred_modes에 transit이 포함되어 있으면 T Map API 사용 안 함
+        has_transit = preferred_modes and 'transit' in preferred_modes
+        
+        if mode in ["walking", "driving"] and not has_transit:
+            # 장소 좌표가 한국 영역 내에 있는지 확인
+            is_korea = self._is_in_korea(places)
+            if is_korea:
+                use_tmap = True
+                print(f"🗺️ 한국 내 경로 감지: T Map API 사용 ({mode})")
+            else:
+                print(f"⚠️ 한국 영역 외 경로 또는 좌표 정보 부족: Google Maps API 사용 ({mode})")
+        elif has_transit:
+            print(f"🚇 대중교통 포함: Google Maps API 사용 (T Map API는 대중교통 미지원)")
+        
+        if use_tmap:
+            # T Map API 사용 (도보/자동차만 지원)
+            tmap_mode = "walking" if mode == "walking" else "driving"
+            try:
+                result = await self.tmap_tool.execute(
+                    places=places,
+                    origin=origin,
+                    destination=destination,
+                    mode=tmap_mode,
+                    optimize_waypoints=optimize_waypoints
+                )
+                
+                # T Map API가 실패한 경우 처리
+                if not result.get("success"):
+                    error_msg = result.get("error", "T Map API 호출 실패")
+                    print(f"❌ T Map API 실패: {error_msg}")
+                    
+                    # T Map API 키가 없거나 서비스 구독이 안 된 경우
+                    # 또는 모든 구간이 실패한 경우 Google Maps로 폴백
+                    if "API 키" in error_msg or "키가 설정되지 않았습니다" in error_msg:
+                        # API 키 문제는 Google Maps로 폴백 (무한 루프 방지)
+                        print(f"⚠️ T Map API 키 문제 감지, Google Maps API로 폴백합니다.")
+                        use_tmap = False
+                    elif "모든 구간" in error_msg or "서비스 제공 지역" in error_msg:
+                        # 서비스 제공 지역이 아니거나 모든 구간 실패 시 Google Maps로 폴백
+                        print(f"⚠️ T Map 서비스 제공 지역이 아니거나 모든 구간 실패, Google Maps API로 폴백합니다.")
+                        use_tmap = False
+                    else:
+                        # 일부 구간만 실패한 경우는 결과를 그대로 반환 (에러 포함)
+                        # 하지만 모든 구간이 실패했으면 Google Maps로 폴백
+                        directions = result.get("directions", [])
+                        all_failed = len(directions) > 0 and all(
+                            d.get("error") or (not d.get("steps") and d.get("duration", 0) == 0)
+                            for d in directions
+                        )
+                        if all_failed:
+                            print(f"⚠️ T Map API 모든 구간 실패, Google Maps API로 폴백합니다.")
+                            use_tmap = False
+                        else:
+                            # 일부 구간은 성공했으므로 결과 반환
+                            pass
+            except Exception as e:
+                error_msg = str(e)
+                print(f"❌ T Map API 예외 발생: {error_msg}")
+                print(f"⚠️ T Map API 예외 발생, Google Maps API로 폴백합니다.")
+                use_tmap = False
+        
+        if not use_tmap:
+            # Google Maps API 사용 (대중교통 또는 한국 외 지역 또는 T Map 실패 시)
+            print(f"🗺️ Google Maps API 사용 ({mode})")
+            result = await self.maps_tool.execute(
+                places=places,
+                origin=origin,
+                destination=destination,
+                mode=mode,
+                optimize_waypoints=optimize_waypoints,
+                preferred_modes=preferred_modes,  # 대안 교통수단 전달
+                user_transportation=user_transportation,  # 원본 입력값 전달
+                departure_time=departure_time,  # 출발 일시 전달 (대중교통 소요 시간 계산용)
+            )
+        else:
+            # T Map API 결과가 이미 result에 있음
+            pass
+        
+        # 결과 검증: 모든 구간이 실패했는지 확인
+        directions = result.get("directions", [])
+        if directions:
+            all_failed = all(
+                d.get("error") or (not d.get("steps") and d.get("duration", 0) == 0)
+                for d in directions
+            )
+            
+            if all_failed and len(directions) > 0:
+                # 모든 구간이 실패한 경우 명확한 에러 메시지 반환 (무한 루프 방지)
+                error_messages = [d.get("error", "알 수 없는 오류") for d in directions if d.get("error")]
+                error_summary = "; ".join(error_messages[:3])
+                if len(error_messages) > 3:
+                    error_summary += f" 외 {len(error_messages) - 3}개 구간 실패"
+                
+                return {
+                    "success": False,
+                    "optimized_route": result.get("optimized_route", places),
+                    "total_duration": 0,
+                    "total_distance": 0,
+                    "directions": directions,
+                    "agent_name": self.name,
+                    "error": f"모든 구간의 경로 계산에 실패했습니다. {error_summary}"
+                }
         
         return {
             "success": result.get("success", False),
@@ -106,6 +207,66 @@ class RoutingAgent(BaseAgent):
             return False
         
         return True
+    
+    def _is_in_korea(self, places: List[Dict[str, Any]]) -> bool:
+        """
+        장소들이 한국 영역 내에 있는지 확인
+        
+        Args:
+            places: 장소 리스트
+            
+        Returns:
+            한국 영역 내에 있으면 True (좌표가 없는 장소가 있어도 좌표가 있는 장소가 모두 한국이면 True)
+        """
+        if not places:
+            return False
+        
+        # 한국 영역 경계 (대략적인 범위)
+        KOREA_BOUNDS = {
+            "min_lat": 33.0,  # 제주도 남쪽
+            "max_lat": 38.6,  # DMZ 북쪽
+            "min_lng": 124.5,  # 서해
+            "max_lng": 132.0   # 동해
+        }
+        
+        has_valid_coords = False
+        korea_count = 0
+        non_korea_count = 0
+        
+        for place in places:
+            coords = place.get("coordinates")
+            if not coords:
+                continue
+            
+            lat = coords.get("lat")
+            lng = coords.get("lng")
+            
+            if lat is None or lng is None:
+                continue
+            
+            has_valid_coords = True
+            
+            # 한국 영역 확인
+            if (KOREA_BOUNDS["min_lat"] <= lat <= KOREA_BOUNDS["max_lat"] and
+                KOREA_BOUNDS["min_lng"] <= lng <= KOREA_BOUNDS["max_lng"]):
+                korea_count += 1
+            else:
+                non_korea_count += 1
+                # 한국 밖 장소가 하나라도 있으면 False
+                print(f"⚠️ 한국 영역 외 장소 발견: {place.get('name', 'Unknown')} ({lat}, {lng})")
+                return False
+        
+        # 좌표가 있는 장소가 하나도 없으면 False (확인 불가)
+        if not has_valid_coords:
+            print(f"⚠️ 좌표 정보가 있는 장소가 없어 한국 영역 확인 불가")
+            return False
+        
+        # 모든 좌표가 있는 장소가 한국 영역 내에 있으면 True
+        if korea_count > 0 and non_korea_count == 0:
+            print(f"✅ 한국 영역 확인: {korea_count}개 장소 모두 한국 내")
+            return True
+        
+        return False
 
 
     def cluster_places(self, places: List[Dict], user_transportation: str) -> List[Dict]:

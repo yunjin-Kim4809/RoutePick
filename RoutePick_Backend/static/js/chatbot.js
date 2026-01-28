@@ -332,11 +332,42 @@ document.addEventListener('DOMContentLoaded', () => {
                             glyphColor: "white",
                         });
 
+                        // 마커 라벨 컨테이너 생성
+                        const markerContainer = document.createElement("div");
+                        markerContainer.style.position = "relative";
+                        markerContainer.style.display = "flex";
+                        markerContainer.style.flexDirection = "column";
+                        markerContainer.style.alignItems = "center";
+                        
+                        // 마커 라벨 생성
+                        const label = document.createElement("div");
+                        label.textContent = place.name;
+                        label.style.cssText = `
+                            background: rgba(255, 255, 255, 0.95);
+                            color: #1a1a1a;
+                            padding: 4px 8px;
+                            border-radius: 4px;
+                            font-size: 12px;
+                            font-weight: 600;
+                            white-space: nowrap;
+                            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+                            margin-bottom: 4px;
+                            max-width: 150px;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                            pointer-events: none;
+                            z-index: 1000;
+                        `;
+                        
+                        // Pin과 라벨을 컨테이너에 추가
+                        markerContainer.appendChild(label);
+                        markerContainer.appendChild(pin.element);
+
                         const marker = new AdvancedMarkerElement({
                             map: window.map,
                             position: coords,
                             title: place.name,
-                            content: pin.element,
+                            content: markerContainer,
                         });
                         
                         // 마커 추적 배열에 추가

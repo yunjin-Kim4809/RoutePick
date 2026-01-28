@@ -373,7 +373,15 @@ def create_trip():
         "budget": data.get("budget")  # 예산 정보 추가
     }
     
-    agent_tasks[task_id] = {"done": False, "success": False, "course": None, "message": "🚀 여행 생성 작업을 시작합니다..." }
+    agent_tasks[task_id] = {
+        "done": False,
+        "success": False,
+        "course": None,
+        "message": "🚀 여행 생성 작업을 시작합니다...",
+        # 나중에 경로 계산 시 사용할 방문 일시 정보도 함께 저장
+        "visit_date": input_data_from_react.get("visit_date"),
+        "visit_time": input_data_from_react.get("visit_time"),
+    }
     threading.Thread(target=run_agent_task_with_id, args=(task_id, input_data_from_react)).start()
     
     print(f"🚀 [{task_id}] 신규 작업 시작.")
@@ -683,6 +691,8 @@ def get_route_guide(task_id):
     places = course.get('places', [])
     sequence = course.get('sequence', [])
     transportation = course.get('transportation', '도보')
+    visit_date = course.get('visit_date') or task.get('visit_date')
+    visit_time_segment = task.get('visit_time') or '오후'
     
     if not places or not sequence:
         return jsonify({"error": "코스 정보가 없습니다."}), 400
@@ -711,8 +721,14 @@ def get_route_guide(task_id):
     # 자전거는 완전히 제외됨
     
     # 사용자가 입력한 교통수단이 있으면 첫 번째 것을 사용
+    # 단, 대중교통(transit)이 포함되어 있으면 무조건 transit을 primary로 설정
     if preferred_modes:
-        transport_mode = preferred_modes[0]
+        # transit이 포함되어 있으면 transit을 우선 사용 (T Map API는 대중교통 미지원)
+        if 'transit' in preferred_modes:
+            transport_mode = 'transit'
+            print(f"🚇 대중교통 포함 감지: transit 모드로 설정 (T Map API는 대중교통 미지원)")
+        else:
+            transport_mode = preferred_modes[0]
     else:
         # 입력이 없으면 기본값 사용 (자전거는 제외)
         transport_mode = 'walking'
@@ -726,11 +742,43 @@ def get_route_guide(task_id):
     if len(ordered_places) < 2:
         return jsonify({"error": "경로 안내를 생성할 장소가 부족합니다."}), 400
     
-    # 기본 경로 안내 메시지 생성 함수 (API 실패 시에도 사용)
+    # 사용자가 입력한 시작일/시간을 기반으로 출발 일시(대중교통 기준)를 계산
+    # visit_date 예시: "2026-02-01" 또는 "2026-02-01 ~ 2026-02-02"
+    # visit_time_segment 예시: "오전", "오후", "저녁", "하루종일", "기타(08:00 - 12:00)"
+    departure_time_str = None
+    try:
+        if visit_date:
+            # 날짜 범위인 경우 첫 번째 날짜 사용
+            first_date = visit_date.split("~")[0].strip()
+            # 시간대에 따른 기본 시작 시간 설정
+            if "기타" in str(visit_time_segment):
+                # "기타(08:00 - 12:00)" 형식에서 첫 번째 시각 추출
+                import re
+                m = re.search(r"(\d{2}:\d{2})", str(visit_time_segment))
+                start_hm = m.group(1) if m else "10:00"
+            elif "오전" in str(visit_time_segment):
+                start_hm = "10:00"
+            elif "저녁" in str(visit_time_segment):
+                start_hm = "18:00"
+            elif "하루종일" in str(visit_time_segment):
+                start_hm = "09:00"
+            else:  # 기본: 오후
+                start_hm = "14:00"
+            departure_time_str = f"{first_date} {start_hm}"
+    except Exception:
+        departure_time_str = None
+
+    # 기본 경로 안내 메시지 및 직선 경로 좌표 생성 함수 (API 실패 시에도 사용)
     def create_basic_guide():
-        """기본 경로 안내 메시지 생성 (Google Maps API 없이) - 개선된 버전"""
+        """
+        기본 경로 안내 메시지와 단순 직선 경로 좌표를 생성합니다.
+        Google Maps Directions API를 사용할 수 없을 때 사용되며,
+        텍스트 안내와 함께 지도에 그릴 수 있는 최소한의 경로 정보(route_paths)를 제공합니다.
+        """
         guide_text = f"🗺️ <strong>상세 경로 안내 ({transportation})</strong>\n\n"
         guide_text += f"<em>💡 Google Maps API를 사용한 상세 경로 정보를 가져올 수 없어 기본 안내를 제공합니다. 정확한 경로는 네비게이션 앱을 사용하시기 바랍니다.</em>\n\n"
+        
+        route_paths = []  # 각 구간별 직선 경로 좌표 정보
         
         for i in range(len(ordered_places) - 1):
             from_place = ordered_places[i]
@@ -740,8 +788,9 @@ def get_route_guide(task_id):
             from_addr = from_place.get('address', '')
             to_addr = to_place.get('address', '')
             
-            # 좌표가 있으면 대략적인 거리 계산 시도
+            # 좌표가 있으면 대략적인 거리 계산 및 직선 경로 좌표 생성 시도
             estimated_distance = ""
+            path_coords = []
             if from_place.get('coordinates') and to_place.get('coordinates'):
                 try:
                     from_coords = from_place['coordinates']
@@ -762,6 +811,12 @@ def get_route_guide(task_id):
                             estimated_distance = f" (약 {int(distance_m)}m)"
                         else:
                             estimated_distance = f" (약 {distance_m/1000:.1f}km)"
+                        
+                        # 직선 경로 좌표 (출발지 → 도착지)
+                        path_coords = [
+                            {"lat": lat1, "lng": lon1},
+                            {"lat": lat2, "lng": lon2},
+                        ]
                 except:
                     pass
             
@@ -825,7 +880,16 @@ def get_route_guide(task_id):
                 guide_text += f"      • 💡 팁: 보행자 전용 도로나 인도를 이용하세요.\n"
             
             guide_text += "\n"
-        return guide_text
+            
+            # 직선 경로 좌표가 있다면 route_paths에 추가
+            if path_coords:
+                route_paths.append([
+                    {
+                        "path": path_coords
+                    }
+                ])
+        
+        return guide_text, route_paths
     
     try:
         # Google Maps API를 사용한 상세 경로 안내 시도
@@ -835,7 +899,8 @@ def get_route_guide(task_id):
             # Google Maps API 키 확인
             if not config.get("google_maps_api_key"):
                 print("⚠️ Google Maps API 키가 없습니다. 기본 경로 안내를 제공합니다.")
-                return jsonify({"guide": create_basic_guide(), "route_paths": []})
+                basic_guide, basic_paths = create_basic_guide()
+                return jsonify({"guide": basic_guide, "route_paths": basic_paths})
             
             routing_agent = RoutingAgent(config=config)
             
@@ -852,7 +917,8 @@ def get_route_guide(task_id):
                 "mode": primary_mode,
                 "optimize_waypoints": False,  # sequence 순서 유지
                 "preferred_modes": user_transport_modes,  # 대안 교통수단 리스트
-                "user_transportation": transportation  # 원본 입력값
+                "user_transportation": transportation,  # 원본 입력값
+                "departure_time": departure_time_str,  # 사용자가 입력한 시작일/시간 기반 출발 일시
             }
             
             # 비동기 실행
@@ -898,7 +964,8 @@ def get_route_guide(task_id):
             if not has_any_valid_directions:
                 print(f"⚠️ 모든 구간의 경로 안내에 문제가 있습니다. 기본 안내를 제공합니다.")
                 # 모든 구간이 실패했을 때만 기본 안내 제공
-                return jsonify({"guide": create_basic_guide(), "route_paths": []})
+                basic_guide, basic_paths = create_basic_guide()
+                return jsonify({"guide": basic_guide, "route_paths": basic_paths})
             
             # 경로 안내 텍스트 생성 및 경로 좌표 정보 수집
             guide_text = f"🗺️ <strong>상세 경로 안내 ({transportation})</strong>\n\n"
@@ -1016,6 +1083,17 @@ def get_route_guide(task_id):
                             "travel_mode": step_travel_mode,
                             "transit_details": step_transit_details
                         })
+                
+                # T Map API에서 반환한 route_coordinates가 있으면 우선 사용 (더 상세한 경로)
+                route_coordinates = direction.get("route_coordinates", [])
+                if route_coordinates and len(route_coordinates) > 0:
+                    # route_coordinates를 하나의 경로로 추가
+                    segment_paths.append({
+                        "path": route_coordinates,
+                        "travel_mode": mode.upper(),
+                        "transit_details": None
+                    })
+                
                 route_paths.append(segment_paths)
                 
                 # 디버깅: 경로 좌표 정보 로그

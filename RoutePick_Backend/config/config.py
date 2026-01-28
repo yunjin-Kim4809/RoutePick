@@ -17,6 +17,7 @@ class Config:
     # API Keys
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
     GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    T_MAP_API_KEY = os.getenv("T_MAP_API_KEY", "")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "") or os.getenv("OPENWEATHER_API_KEY", "")
 
@@ -36,6 +37,7 @@ class Config:
         return {
             "api_key": cls.TAVILY_API_KEY,
             "google_maps_api_key": cls.GOOGLE_MAPS_API_KEY,
+            "t_map_api_key": cls.T_MAP_API_KEY,
             "openai_api_key": cls.OPENAI_API_KEY,
             "weather_api_key": cls.WEATHER_API_KEY,
             "llm_model": cls.LLM_MODEL,
