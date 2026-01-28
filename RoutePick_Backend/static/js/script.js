@@ -3,6 +3,34 @@ let geocoder;
 let markers = [];  // 마커 추적
 let polylines = [];  // 경로 라인 추적
 
+function getHaversineDistanceMeters(a, b) {
+    if (!a || !b) return 0;
+    const toRad = (v) => (v * Math.PI) / 180;
+    const lat1 = typeof a.lat === 'function' ? a.lat() : a.lat;
+    const lng1 = typeof a.lng === 'function' ? a.lng() : a.lng;
+    const lat2 = typeof b.lat === 'function' ? b.lat() : b.lat;
+    const lng2 = typeof b.lng === 'function' ? b.lng() : b.lng;
+    const R = 6371000;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const sLat1 = toRad(lat1);
+    const sLat2 = toRad(lat2);
+    const aVal = Math.sin(dLat / 2) ** 2 + Math.cos(sLat1) * Math.cos(sLat2) * Math.sin(dLng / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(aVal), Math.sqrt(1 - aVal));
+    return Math.round(R * c);
+}
+
+function getTravelModeFromTransportation(transportation) {
+    const transportText = transportation || '도보';
+    if (transportText.includes('버스') || transportText.includes('지하철') || transportText.includes('대중교통')) {
+        return google.maps.TravelMode.TRANSIT;
+    }
+    if (transportText.includes('자동차')) {
+        return google.maps.TravelMode.DRIVING;
+    }
+    return google.maps.TravelMode.WALKING;
+}
+
 async function initMap() {
     // google 객체가 로드되었는지 확인 (비동기 대응)
     if (typeof google === 'undefined') {
@@ -144,19 +172,33 @@ window.processLocations = async function(AdvancedMarkerElement, PinElement) {
     const results = await Promise.all(geocodePromises);
     const validCoords = results.filter(c => c !== null);
     const validPlaces = orderedPlaces.filter((place, idx) => results[idx] !== null);
+    
+    // 전역으로 보관 (경로 안내 버튼/재그리기에서 사용)
+    window.routeCoords = validCoords;
+    window.routePlaces = validPlaces;
+    window.courseData = data;
 
     // 경로 안내 버튼과 동일한 경로로 초기 표시
     if (validCoords.length > 1) {
         const routePaths = await fetchRouteGuidePaths(taskId);
-        if (routePaths && routePaths.length > 0) {
-            drawRouteFromServerData(routePaths);
+        const travelMode = getTravelModeFromTransportation(data.transportation);
+        if (travelMode === google.maps.TravelMode.TRANSIT) {
+            if (routePaths && routePaths.length > 0) {
+                drawRouteFromServerData(routePaths);
+            } else {
+                // 폴백: 서버 경로가 없으면 기존 방식 사용
+                await drawActualRoute(validCoords, validPlaces, data, { travelMode });
+            }
         } else {
-            // 폴백: 서버 경로가 없으면 기존 방식 사용
-            await drawActualRoute(validCoords, validPlaces, data);
-            const bounds = new google.maps.LatLngBounds();
-            validCoords.forEach(c => bounds.extend(c));
-            map.fitBounds(bounds);
+            // 도보/자동차는 DirectionsService 경로 우선 사용
+            const drew = await drawActualRoute(validCoords, validPlaces, data, { travelMode, allowStraightFallback: false });
+            if (!drew && routePaths && routePaths.length > 0) {
+                drawRouteFromServerData(routePaths);
+            }
         }
+        const bounds = new google.maps.LatLngBounds();
+        validCoords.forEach(c => bounds.extend(c));
+        map.fitBounds(bounds);
     }
     
     // 전역 변수 업데이트
@@ -259,27 +301,20 @@ function getTransportStyle(travelMode, transitDetails) {
 }
 
 // 실제 도로 경로 그리기 함수 (이동 수단별 색상 구분)
-window.drawActualRoute = async function(coords, places, courseData) {
+window.drawActualRoute = async function(coords, places, courseData, options = {}) {
     try {
         // Directions Service 사용
         const directionsService = new google.maps.DirectionsService();
 
         // 이동 수단 결정 (사용자가 입력한 교통수단 우선)
         const transportation = courseData.transportation || '도보';
-        let travelMode = google.maps.TravelMode.WALKING;
-        
-        // 우선순위: 지하철/버스 > 자동차 > 도보 (자전거 제외)
-        if (transportation.includes('버스') || transportation.includes('지하철')) {
-            travelMode = google.maps.TravelMode.TRANSIT;
-        } else if (transportation.includes('자동차')) {
-            travelMode = google.maps.TravelMode.DRIVING;
-        } else {
-            // 기본값은 도보 (자전거는 완전히 제외)
-            travelMode = google.maps.TravelMode.WALKING;
-        }
+        let travelMode = options.travelMode || getTravelModeFromTransportation(transportation);
+        const allowStraightFallback = options.allowStraightFallback !== false;
+        const useOverviewPath = travelMode === google.maps.TravelMode.WALKING || travelMode === google.maps.TravelMode.DRIVING;
 
         // 각 구간별로 경로 그리기
         const routePromises = [];
+        let anyRouteDrawn = false;
         for (let i = 0; i < coords.length - 1; i++) {
             const origin = coords[i];
             const destination = coords[i + 1];
@@ -296,56 +331,94 @@ window.drawActualRoute = async function(coords, places, courseData) {
                         (result, status) => {
                             if (status === google.maps.DirectionsStatus.OK && result.routes && result.routes.length > 0) {
                                 const route = result.routes[0];
-                                
-                                // 각 leg의 step별로 경로 그리기 (이동 수단별 색상 구분)
-                                route.legs.forEach(leg => {
-                                    leg.steps.forEach(step => {
-                                        const stepPath = [];
-                                        
-                                        // step의 경로 좌표 추출
-                                        if (step.path) {
-                                            step.path.forEach(point => {
-                                                stepPath.push({ lat: point.lat(), lng: point.lng() });
-                                            });
-                                        }
-                                        
-                                        if (stepPath.length > 0) {
-                                            // step의 travel_mode와 transit_details 확인
-                                            const stepTravelMode = step.travel_mode || travelMode;
-                                            const stepTransitDetails = step.transit_details;
-                                            
-                                            // 이동 수단별 스타일 가져오기
-                                            const style = getTransportStyle(stepTravelMode, stepTransitDetails);
-                                            
-                                            // 각 step별로 polyline 생성
-                                            const polyline = new google.maps.Polyline({
-                                                path: stepPath,
-                                                strokeColor: style.color,
-                                                strokeOpacity: style.strokeOpacity,
-                                                strokeWeight: style.strokeWeight,
-                                                zIndex: style.zIndex,
-                                                map: map
-                                            });
-                                            
-                                            polylines.push(polyline);
-                                        }
+                                if (useOverviewPath && route.overview_path && route.overview_path.length > 0) {
+                                    const overviewPath = route.overview_path.map(point => ({
+                                        lat: point.lat(),
+                                        lng: point.lng()
+                                    }));
+                                    const style = getTransportStyle(travelMode, null);
+                                    const polyline = new google.maps.Polyline({
+                                        path: overviewPath,
+                                        strokeColor: style.color,
+                                        strokeOpacity: style.strokeOpacity,
+                                        strokeWeight: style.strokeWeight,
+                                        zIndex: style.zIndex,
+                                        map: map
                                     });
-                                });
+                                    polylines.push(polyline);
+                                    anyRouteDrawn = true;
+                                } else {
+                                    // 각 leg의 step별로 경로 그리기 (이동 수단별 색상 구분)
+                                    route.legs.forEach(leg => {
+                                        leg.steps.forEach(step => {
+                                            const stepPath = [];
+                                            
+                                            // step의 경로 좌표 추출
+                                            if (step.path) {
+                                                step.path.forEach(point => {
+                                                    stepPath.push({ lat: point.lat(), lng: point.lng() });
+                                                });
+                                            }
+                                            
+                                            if (stepPath.length > 0) {
+                                                // step의 travel_mode와 transit_details 확인
+                                                const stepTravelMode = step.travel_mode || travelMode;
+                                                const stepTransitDetails = step.transit_details;
+                                                
+                                                // 이동 수단별 스타일 가져오기
+                                                const style = getTransportStyle(stepTravelMode, stepTransitDetails);
+                                                
+                                                // 각 step별로 polyline 생성
+                                                const polyline = new google.maps.Polyline({
+                                                    path: stepPath,
+                                                    strokeColor: style.color,
+                                                    strokeOpacity: style.strokeOpacity,
+                                                    strokeWeight: style.strokeWeight,
+                                                    zIndex: style.zIndex,
+                                                    map: map
+                                                });
+                                                
+                                                polylines.push(polyline);
+                                                anyRouteDrawn = true;
+                                            }
+                                        });
+                                    });
+                                }
                                 
                                 resolve(true);
                             } else {
                                 // 실패 시 직선으로 폴백
-                                console.warn(`경로 ${i+1} 그리기 실패 (${status}), 직선으로 표시합니다.`);
-                                const style = getTransportStyle(travelMode, null);
-                                const fallbackPolyline = new google.maps.Polyline({
-                                    path: [origin, destination],
-                                    strokeColor: TRANSPORT_COLORS.FALLBACK,
-                                    strokeOpacity: 0.5,
-                                    strokeWeight: 3,
-                                    map: map,
-                                    zIndex: 0
+                                if (allowStraightFallback) {
+                                    console.warn(`경로 ${i+1} 그리기 실패 (${status}), 직선으로 표시합니다.`);
+                                    const style = getTransportStyle(travelMode, null);
+                                    const fallbackPolyline = new google.maps.Polyline({
+                                        path: [origin, destination],
+                                        strokeColor: TRANSPORT_COLORS.FALLBACK,
+                                        strokeOpacity: 0.5,
+                                        strokeWeight: 3,
+                                        map: map,
+                                        zIndex: 0
+                                    });
+                                    polylines.push(fallbackPolyline);
+                                } else {
+                                    console.warn(`경로 ${i+1} 그리기 실패 (${status}), 직선 폴백 생략`);
+                                }
+                                
+                                const directDistance = getHaversineDistanceMeters(origin, destination);
+                                console.warn('DirectionsService 실패 상세', {
+                                    segmentIndex: i + 1,
+                                    status,
+                                    travelMode: travelMode,
+                                    origin: {
+                                        lat: typeof origin.lat === 'function' ? origin.lat() : origin.lat,
+                                        lng: typeof origin.lng === 'function' ? origin.lng() : origin.lng
+                                    },
+                                    destination: {
+                                        lat: typeof destination.lat === 'function' ? destination.lat() : destination.lat,
+                                        lng: typeof destination.lng === 'function' ? destination.lng() : destination.lng
+                                    },
+                                    directDistanceMeters: directDistance
                                 });
-                                polylines.push(fallbackPolyline);
                                 resolve(false);
                             }
                         }
@@ -354,15 +427,17 @@ window.drawActualRoute = async function(coords, places, courseData) {
             );
         }
         
-        await Promise.all(routePromises);
+        const results = await Promise.all(routePromises);
+        const hasSuccess = results.some(Boolean) || anyRouteDrawn;
         
         // 범례 추가
         addRouteLegend();
+        return hasSuccess;
         
     } catch (error) {
         console.error("실제 경로 그리기 실패, 직선으로 표시합니다:", error);
         // 폴백: 직선 경로
-        if (coords.length > 1) {
+        if (coords.length > 1 && (options.allowStraightFallback !== false)) {
             const fallbackPolyline = new google.maps.Polyline({
                 path: coords,
                 strokeColor: TRANSPORT_COLORS.FALLBACK,
@@ -373,6 +448,7 @@ window.drawActualRoute = async function(coords, places, courseData) {
             });
             polylines.push(fallbackPolyline);
         }
+        return false;
     }
 };
 
@@ -504,6 +580,11 @@ async function fetchRouteGuidePaths(taskId) {
         return null;
     }
 }
+
+// 전역으로 노출 (chatbot.js에서 사용)
+window.fetchRouteGuidePaths = fetchRouteGuidePaths;
+window.drawRouteFromServerData = drawRouteFromServerData;
+window.getTravelModeFromTransportation = getTravelModeFromTransportation;
 
 // 지도 왼쪽 위에 날씨 정보 표시 함수
 function displayWeatherOnMap(weather, visitDate) {
@@ -837,8 +918,26 @@ document.addEventListener('DOMContentLoaded', () => {
                         window.polylines = [];
                     }
                     
-                    // 서버에서 받은 경로 좌표 정보로 경로 그리기
-                    drawRouteFromServerData(data.route_paths);
+                    const routePaths = data.route_paths;
+                    const hasTransit = routePaths.some(segment =>
+                        (segment || []).some(step => (step.travel_mode || '').toUpperCase() === 'TRANSIT')
+                    );
+                    
+                    if (!hasTransit && window.routeCoords && window.routePlaces && window.courseData) {
+                        // 도보/자동차는 DirectionsService 경로 우선 사용
+                        (async () => {
+                            const drew = await drawActualRoute(window.routeCoords, window.routePlaces, window.courseData, {
+                                travelMode: getTravelModeFromTransportation(window.courseData.transportation),
+                                allowStraightFallback: false
+                            });
+                            if (!drew && routePaths && routePaths.length > 0) {
+                                drawRouteFromServerData(routePaths);
+                            }
+                        })();
+                    } else {
+                        // 서버에서 받은 경로 좌표 정보로 경로 그리기
+                        drawRouteFromServerData(routePaths);
+                    }
                 } else {
                     console.warn('경로 그리기 조건 불만족:', {
                         hasRoutePaths: !!data.route_paths,
