@@ -17,7 +17,26 @@
     <div class="main-container">
         <!-- (a) 좌측 챗봇 섹션 -->
         <section class="left-pane">
-            <header class="chat-header"><h1>AI 가이드</h1></header>
+            <header class="chat-header">
+                <h1>AI 가이드</h1>
+                <!-- [여기!] 이 버튼을 추가하세요 -->
+                <a href="/api/generate-card/{{ task_id }}" download 
+                    style="
+                        position: absolute; 
+                        top: 15px; 
+                        right: 15px; 
+                        padding: 8px 12px; 
+                        background-color: #C5A683; 
+                        color: white; 
+                        text-decoration: none; 
+                        border-radius: 5px; 
+                        font-size: 14px;
+                        font-weight: bold;
+                    ">
+                    🖼️ 카드 저장
+                </a>
+                            
+            </header>
             <div id="chat-window" class="chat-window">
                 <!-- 채팅 내용이 여기 쌓입니다 -->
             </div>

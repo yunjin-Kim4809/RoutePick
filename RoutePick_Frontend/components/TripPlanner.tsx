@@ -1,6 +1,5 @@
-// 1. useRef 추가, Map 아이콘 추가
-import React, { useState, useEffect, useRef } from 'react'; 
-import { X, ArrowRight, ArrowLeft, Calendar as CalendarIcon, MapPin, Users, Footprints, Sparkles, Train, Bus, Car, Plus, ChevronLeft, ChevronRight, MoreHorizontal, Map } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { X, ArrowRight, ArrowLeft, Calendar as CalendarIcon, MapPin, Users, Footprints, Sparkles, Train, Bus, Car, Plus, ChevronLeft, ChevronRight, MoreHorizontal, Github, Navigation, Map, Terminal, Gamepad2, Flag, RefreshCw, Trophy, Timer, Coffee, Camera, Utensils, Music, ShoppingBag, Plane, Pizza, Beer, Star, AlertTriangle } from 'lucide-react';
 
 // --- Loading Animation Assets ---
 const ICONS = [
@@ -28,6 +27,250 @@ const LOADING_STEPS = [
   { label: '여정 지도 생성 중...', subtext: '취향에 맞는 루트 생성', iconIndex: 2 },
   { label: '일정 마무리 중...', subtext: '최종 루트 출력', iconIndex: 3 },
 ];
+
+// --- NEW GAME: Travel Snake (World Tour Edition) ---
+// Snake mechanic but with travel theme
+
+const COLS = 20;
+const ROWS = 13; // Reverted to 13 to maintain correct aspect ratio
+const INITIAL_SPEED = 150;
+const MIN_SPEED = 70;
+
+// Food Types with Icons and Points
+const TRAVEL_ITEMS = [
+    { type: 'pizza', icon: Pizza, color: 'text-orange-500', points: 10 },
+    { type: 'sushi', icon: Star, color: 'text-red-500', points: 20 }, // Star acting as premium food
+    { type: 'coffee', icon: Coffee, color: 'text-brown-500', points: 5 },
+    { type: 'camera', icon: Camera, color: 'text-blue-500', points: 15 },
+    { type: 'beer', icon: Beer, color: 'text-yellow-500', points: 10 },
+    { type: 'shopping', icon: ShoppingBag, color: 'text-purple-500', points: 25 },
+];
+
+const TravelSnakeGame: React.FC = () => {
+    const [snake, setSnake] = useState([{x: 5, y: 5}, {x: 4, y: 5}, {x: 3, y: 5}]); // Initial snake
+    const [food, setFood] = useState({x: 10, y: 5, item: TRAVEL_ITEMS[0]});
+    const [dir, setDir] = useState({x: 1, y: 0}); // Moving right
+    const [nextDir, setNextDir] = useState({x: 1, y: 0}); // Buffer for rapid key presses
+    const [gameOver, setGameOver] = useState(false);
+    const [score, setScore] = useState(0);
+    const [highScore, setHighScore] = useState(0);
+    const [speed, setSpeed] = useState(INITIAL_SPEED);
+    const [isPlaying, setIsPlaying] = useState(false);
+    
+    // SAFE ZONES logic removed as iPad is now behind the game
+
+    const generateFood = useCallback((currentSnake: {x:number, y:number}[]) => {
+        let newFood;
+        let valid = false;
+        while (!valid) {
+            const x = Math.floor(Math.random() * COLS);
+            const y = Math.floor(Math.random() * ROWS);
+            
+            // Check collision with snake
+            const onSnake = currentSnake.some(segment => segment.x === x && segment.y === y);
+            
+            if (!onSnake) {
+                const randomItem = TRAVEL_ITEMS[Math.floor(Math.random() * TRAVEL_ITEMS.length)];
+                newFood = { x, y, item: randomItem };
+                valid = true;
+            }
+        }
+        return newFood!;
+    }, []);
+
+    // Game Loop
+    useEffect(() => {
+        if (gameOver || !isPlaying) return;
+
+        const moveSnake = () => {
+            setSnake(prevSnake => {
+                const head = prevSnake[0];
+                const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+
+                // 1. Check Wall Collision
+                if (newHead.x < 0 || newHead.x >= COLS || newHead.y < 0 || newHead.y >= ROWS) {
+                    setGameOver(true);
+                    return prevSnake;
+                }
+
+                // 2. Check Self Collision
+                if (prevSnake.some(segment => segment.x === newHead.x && segment.y === newHead.y)) {
+                    setGameOver(true);
+                    return prevSnake;
+                }
+
+                const newSnake = [newHead, ...prevSnake];
+
+                // 3. Check Food
+                if (newHead.x === food.x && newHead.y === food.y) {
+                    // Eat food
+                    setScore(s => s + food.item.points);
+                    setSpeed(s => Math.max(MIN_SPEED, s * 0.98)); // Increase speed slightly
+                    setFood(generateFood(newSnake));
+                    // Don't pop tail (grow)
+                } else {
+                    // Move normally
+                    newSnake.pop();
+                }
+
+                return newSnake;
+            });
+            // Update direction from buffer
+            setDir(nextDir);
+        };
+
+        const gameInterval = setInterval(moveSnake, speed);
+        return () => clearInterval(gameInterval);
+    }, [dir, nextDir, food, gameOver, isPlaying, speed, generateFood]);
+
+    // Input Handling
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Prevent scrolling with arrows/space
+            if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) {
+                e.preventDefault();
+            }
+
+            if (!isPlaying && e.key === ' ') {
+                resetGame();
+                return;
+            }
+
+            if (gameOver && e.key === ' ') {
+                resetGame();
+                return;
+            }
+
+            switch(e.key) {
+                case 'ArrowUp': 
+                    if (dir.y === 0) setNextDir({x: 0, y: -1}); 
+                    break;
+                case 'ArrowDown': 
+                    if (dir.y === 0) setNextDir({x: 0, y: 1}); 
+                    break;
+                case 'ArrowLeft': 
+                    if (dir.x === 0) setNextDir({x: -1, y: 0}); 
+                    break;
+                case 'ArrowRight': 
+                    if (dir.x === 0) setNextDir({x: 1, y: 0}); 
+                    break;
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [dir, isPlaying, gameOver]);
+
+    const resetGame = () => {
+        setSnake([{x: 5, y: 5}, {x: 4, y: 5}, {x: 3, y: 5}]);
+        setDir({x: 1, y: 0});
+        setNextDir({x: 1, y: 0});
+        setScore(0);
+        setSpeed(INITIAL_SPEED);
+        setGameOver(false);
+        setIsPlaying(true);
+        if (score > highScore) setHighScore(score);
+        setFood(generateFood([{x: 5, y: 5}, {x: 4, y: 5}, {x: 3, y: 5}]));
+    };
+
+    return (
+        <div className="w-full h-full relative bg-gray-50 flex flex-col items-center justify-start select-none font-mono">
+            
+            {/* --- GAME HEADER (Score & Status) --- */}
+            {/* INCREASED TOP MARGIN FROM mt-16 TO mt-32 TO AVOID NOTIFICATION OVERLAP */}
+            <div className="w-full px-8 mt-32 flex justify-between items-center z-10 transition-all duration-300">
+                <div className="flex flex-col">
+                    <span className="text-[10px] uppercase text-gray-400 font-bold tracking-widest">Score</span>
+                    <span className="text-2xl font-black text-black">{score}</span>
+                </div>
+                
+                {!isPlaying && !gameOver && (
+                    <div className="animate-pulse text-sm font-bold bg-black text-white px-4 py-1 rounded-full">
+                        PRESS SPACE TO START
+                    </div>
+                )}
+                
+                <div className="flex flex-col items-end">
+                    <span className="text-[10px] uppercase text-gray-400 font-bold tracking-widest">Best</span>
+                    <span className="text-xl font-bold text-gray-500">{Math.max(score, highScore)}</span>
+                </div>
+            </div>
+
+            {/* --- GAME GRID --- */}
+            <div 
+                className="relative mt-4 bg-white border-2 border-gray-200 rounded-lg shadow-sm overflow-hidden"
+                style={{
+                    width: '90%',
+                    aspectRatio: `${COLS}/${ROWS}`,
+                    display: 'grid',
+                    gridTemplateColumns: `repeat(${COLS}, 1fr)`,
+                    gridTemplateRows: `repeat(${ROWS}, 1fr)`
+                }}
+            >
+                {/* Overlay: Game Over */}
+                {gameOver && (
+                    <div className="absolute inset-0 z-20 bg-black/50 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+                        <Trophy className="w-12 h-12 mb-2 text-yellow-400" />
+                        <h3 className="text-2xl font-bold mb-1">Game Over</h3>
+                        <p className="text-sm opacity-80 mb-4">Final Score: {score}</p>
+                        <button 
+                            onClick={resetGame}
+                            className="px-6 py-2 bg-white text-black font-bold rounded-full hover:bg-gray-200 transition-colors"
+                        >
+                            Try Again
+                        </button>
+                    </div>
+                )}
+
+                {/* Grid Cells */}
+                {Array.from({ length: ROWS * COLS }).map((_, i) => {
+                    const x = i % COLS;
+                    const y = Math.floor(i / COLS);
+                    
+                    const isSnakeHead = snake[0].x === x && snake[0].y === y;
+                    const isSnakeBody = snake.slice(1).some(s => s.x === x && s.y === y);
+                    const isFood = food.x === x && food.y === y;
+
+                    return (
+                        <div key={i} className="relative flex items-center justify-center">
+                            {/* Grid Lines (Subtle) */}
+                            <div className="absolute inset-0 border-[0.5px] border-gray-50"></div>
+
+                            {/* Food */}
+                            {isFood && (
+                                <food.item.icon className={`w-3/4 h-3/4 ${food.item.color} animate-bounce`} />
+                            )}
+
+                            {/* Snake Body */}
+                            {isSnakeBody && (
+                                <div className="w-full h-full bg-black rounded-sm scale-90"></div>
+                            )}
+
+                            {/* Snake Head */}
+                            {isSnakeHead && (
+                                <div className="w-full h-full bg-black rounded-sm flex items-center justify-center z-10 relative">
+                                    <Plane className={`w-3/4 h-3/4 text-white transform transition-transform duration-100
+                                        ${dir.x === 1 ? 'rotate-90' : ''}
+                                        ${dir.x === -1 ? '-rotate-90' : ''}
+                                        ${dir.y === 1 ? 'rotate-180' : ''}
+                                        ${dir.y === -1 ? 'rotate-0' : ''}
+                                    `} />
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+
+            {/* Controls Hint - Translated to Korean and styled with sans-serif */}
+            <div className="mt-4 flex gap-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest font-sans">
+                <span className="flex items-center gap-1"><span className="p-1 border rounded bg-white">방향키</span> 이동</span>
+                <span className="flex items-center gap-1"><span className="p-1 border rounded bg-white">스페이스바</span> 재시작</span>
+            </div>
+        </div>
+    );
+};
+// --- END NEW GAME ---
+
 
 interface TripPlannerProps {
   isOpen: boolean;
@@ -62,6 +305,8 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   
+  const [gameMode, setGameMode] = useState(false); // Toggle between Map and Game
+
   // Custom states for UI logic
   const [isGroupSizeOther, setIsGroupSizeOther] = useState(false);
   const [isTransportOther, setIsTransportOther] = useState(false);
@@ -389,20 +634,36 @@ const handleNext = async () => {
         <div className="flex-1 w-full max-w-3xl animate-fade-in-up delay-200 perspective-1000 relative lg:-translate-x-32 lg:-translate-y-24">
              
              {/* 1. MAIN MONITOR (Spline Map) */}
-             {/* Changed aspect ratio to 4:3 as requested to prefer top/bottom bars over side bars */}
-             <div className="relative aspect-[4/3] w-full bg-white rounded-[2rem] shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)] overflow-hidden border-[6px] border-white ring-1 ring-gray-900/5 transition-transform hover:scale-[1.01] duration-700 ease-out z-10">
+             {/* Dynamic z-index based on gameMode */}
+             <div className={`relative aspect-[4/3] w-full bg-white rounded-[2rem] shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)] overflow-hidden border-[6px] border-white ring-1 ring-gray-900/5 transition-all duration-700 ease-out ${gameMode ? 'z-30 scale-100' : 'z-10 scale-[0.98]'}`}>
                 
                 {/* Window Controls */}
-                <div className="absolute top-0 left-0 right-0 h-10 bg-gray-50/90 backdrop-blur-sm border-b border-gray-100 flex items-center px-5 gap-2 z-10">
-                   <div className="w-3 h-3 rounded-full bg-[#FF5F56] shadow-sm"></div>
-                   <div className="w-3 h-3 rounded-full bg-[#FFBD2E] shadow-sm"></div>
-                   <div className="w-3 h-3 rounded-full bg-[#27C93F] shadow-sm"></div>
-                   
-                   {/* Fake Address Bar */}
-                   <div className="ml-4 flex-1 h-5 bg-gray-200/50 rounded-md flex items-center justify-center">
-                        <div className="w-20 h-1.5 bg-gray-300 rounded-full"></div>
+                <div className="absolute top-0 left-0 right-0 h-10 bg-gray-50/90 backdrop-blur-sm border-b border-gray-100 flex items-center px-5 gap-2 z-10 justify-between">
+                   <div className="flex gap-2">
+                        <div className="w-3 h-3 rounded-full bg-[#FF5F56] shadow-sm"></div>
+                        <div className="w-3 h-3 rounded-full bg-[#FFBD2E] shadow-sm"></div>
+                        <div className="w-3 h-3 rounded-full bg-[#27C93F] shadow-sm"></div>
                    </div>
-                </div>
+
+                   {/* Address Bar / Mode Switcher */}
+                   <div className="flex-1 mx-4 h-6 bg-gray-200/50 rounded-md flex items-center justify-between px-1">
+                        <button 
+                            onClick={() => setGameMode(false)}
+                            className={`flex-1 flex items-center justify-center rounded text-[10px] font-bold uppercase transition-all ${!gameMode ? 'bg-white shadow-sm text-black' : 'text-gray-400 hover:text-gray-600'}`}
+                        >
+                            <Map className="w-3 h-3 mr-1" /> Map
+                        </button>
+                        <div className="w-px h-3 bg-gray-300 mx-1"></div>
+                        <button 
+                            onClick={() => setGameMode(true)}
+                            className={`flex-1 flex items-center justify-center rounded text-[10px] font-bold uppercase transition-all ${gameMode ? 'bg-white shadow-sm text-black' : 'text-gray-400 hover:text-gray-600'}`}
+                        >
+                            <Gamepad2 className="w-3 h-3 mr-1" /> Game
+                        </button>
+                   </div>
+
+                   <div className="w-12"></div> {/* Spacer for balance */}
+                </div>                
                 
                 {/* ▼▼▼ [새로 추가하는 부분] 알림창 (Notification Popup) ▼▼▼ */}
                 <div 
@@ -430,26 +691,35 @@ const handleNext = async () => {
                 </div>
                 {/* ▲▲▲ [추가 완료] ▲▲▲ */}                
                 
-                {/* Screen Content - Spline Map */}
+                {/* Screen Content */}
                 <div className="absolute inset-0 pt-10 bg-gray-100 overflow-hidden">
-                    <iframe 
-                      src='https://my.spline.design/mapcopycopy-eHtXE3Yw41nPzqesI8XblKSL-AOA/' 
-                      frameBorder='0' 
-                      width='100%' 
-                      height='100%'
-                      className="w-full h-full origin-center"
-                      title="Route Generation 3D"
-                      style={{ border: 'none' }}
-                  ></iframe>
+                    {gameMode ? (
+                        <TravelSnakeGame />
+                    ) : (
+                        <iframe 
+                            src='https://my.spline.design/mapcopycopy-eHtXE3Yw41nPzqesI8XblKSL-AOA/' 
+                            frameBorder='0' 
+                            width='100%' 
+                            height='100%'
+                            className="w-full h-full origin-center"
+                            title="Route Generation 3D"
+                            style={{ border: 'none' }}
+                        ></iframe>
+                    )}
                 </div>
-                
+
                 {/* Subtle Inner Shadow for Depth */}
                 <div className="absolute inset-0 pointer-events-none shadow-[inset_0_0_40px_rgba(0,0,0,0.05)] rounded-[1.5rem] z-20"></div>
              </div>
 
              {/* 2. THE TABLET (iPad Landscape) */}
              {/* Replaced iPhone with iPad: aspect-[4/3], larger width, positioned to overlap bottom-right */}
-             <div className="absolute -bottom-20 -right-10 md:-bottom-48 md:-right-36 w-64 md:w-[58%] aspect-[4/3] bg-gray-900 rounded-[1.5rem] p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-30 transform rotate-[6deg] hover:rotate-0 transition-transform duration-500 hidden md:block border border-gray-800">
+             <div className={`absolute -bottom-20 -right-10 md:-bottom-48 md:-right-36 w-64 md:w-[58%] aspect-[4/3] bg-gray-900 rounded-[1.5rem] p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transform hover:rotate-0 transition-all duration-500 hidden md:block border border-gray-800
+                ${gameMode 
+                    ? 'z-0 opacity-40 scale-90 translate-y-10 rotate-[2deg]' 
+                    : 'z-40 opacity-100 scale-100 rotate-[6deg]'
+                }
+             `}>
                 <div className="w-full h-full bg-white rounded-[1.2rem] overflow-hidden relative border border-gray-100">
                     
                     {/* Screen Content - Sequential Animation */}

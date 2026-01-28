@@ -1109,5 +1109,4 @@ check_routing(places=[장소리스트], mode="transit")
             # 링크, 설명 등은 모두 제거 (토큰 절약)
             formatted.append(info)
             
-        return "\n".join(formatted)  # 줄바꿈 하나로 통일하여 토큰 절약
-
+        return "\n\n".join(formatted)
