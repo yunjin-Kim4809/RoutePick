@@ -1775,69 +1775,75 @@ def generate_travel_card(task_id):
         return "코스 정보를 찾을 수 없습니다.", 404
 
     try:
-        # --- 기본 설정 ---
-        IMG_WIDTH = 1080
-        PADDING = 90 # 여백을 조금 더 줍니다.
+        # --- [수정] 템플릿 맞춤 설정 (공격적 재조정) ---
+        template = Image.open("static/images/card_template_horizontal.png")
+        IMG_WIDTH, IMG_HEIGHT = template.size
+        PADDING = 90
         
-        template = Image.open("static/images/card_template.png")
         draw = ImageDraw.Draw(template)
-
         font_path = "static/fonts/GowunDodum-Regular.ttf"
-        
-        # --- [수정] 템플릿에 맞게 폰트 크기 및 간격 재조정 ---
-        title_font = ImageFont.truetype(font_path, size=90)
-        subtitle_font = ImageFont.truetype(font_path, size=55)
-        
-        sequence = course_data.get('sequence', [])
-        num_places = len(sequence)
-        
-        if num_places > 6:
-            place_font_size = 44
-            line_height_ratio = 1.4
-            item_gap = 20  # [수정] 장소 간 간격을 더 좁게
-        else:
-            place_font_size = 50
-            line_height_ratio = 1.5
-            item_gap = 30  # [수정] 장소 간 간격을 더 좁게
 
-        place_font = ImageFont.truetype(font_path, size=place_font_size)
-        line_height = place_font.getbbox("A")[3] * line_height_ratio
+        # [수정] 폰트 사이즈 대폭 축소
+        title_font = ImageFont.truetype(font_path, size=60)
+        subtitle_font = ImageFont.truetype(font_path, size=34)
+        place_font = ImageFont.truetype(font_path, size=20) # <<< 훨씬 작게
+        
+        # [수정] 간격 대폭 축소
+        line_height = place_font.getbbox("A")[3] * 1.3 # 줄 간격
+        item_gap = 20 # 장소와 장소 사이 간격
 
         # --- 텍스트 그리기 ---
         
-        # 1. 타이틀 (위치를 살짝 위로 조정)
-        location = course_data.get("location", "")
-        theme = course_data.get("theme", "추천 코스")
-        draw.text((PADDING, 180), location, font=title_font, fill="#333333")
-        draw.text((PADDING, 300), theme, font=subtitle_font, fill="#555555")
+        # 1. 타이틀 (확 올렸습니다)
+        draw.text((PADDING, 100), course_data.get("location", ""), font=title_font, fill="#333333")
+        draw.text((PADDING, 200), course_data.get("theme", "추천 코스"), font=subtitle_font, fill="#555555")
 
-        # 2. 코스 목록 (시작 위치 조정)
-        y_position = 480 # 타이틀과 간격을 더 줍니다.
+        # 2. 2단 목록 로직 (시작 위치 확 올렸습니다)
+        y_start_position = 300 # <<< Y 좌표 대폭 상향
+        y_position = y_start_position
+        
+        sequence = course_data.get('sequence', [])
         places = course_data.get('places', [])
         
-        number_x = PADDING
-        text_x = number_x + 70
-        max_text_width = IMG_WIDTH - text_x - PADDING
+        col1_x = PADDING
+        col2_x = IMG_WIDTH / 2 + 40
+        column_break_y = IMG_HEIGHT - 180 # 하단 로고 영역 확보
         
+        current_column = 1
+
         for i, place_idx in enumerate(sequence):
-            # [수정] 템플릿 하단 로고와 겹치지 않도록 안전 여백 확보
-            if y_position > template.height - 300:
-                draw.text((number_x, y_position), "...", font=place_font, fill="#888888")
-                break
+            # 2열로 전환
+            if y_position + line_height > column_break_y and current_column == 1:
+                y_position = y_start_position
+                current_column = 2
+
+            if current_column == 1:
+                number_x = col1_x
+                max_width = col2_x - col1_x - PADDING
+            else:
+                number_x = col2_x
+                max_width = IMG_WIDTH - col2_x - PADDING
+            
+            text_x = number_x + 55
+
+            # 2열도 꽉 차면 종료
+            if y_position + line_height > column_break_y:
+                 draw.text((number_x, y_position), "...", font=place_font, fill="#888888")
+                 break
 
             if place_idx < len(places):
                 place_name = places[place_idx]['name']
                 draw.text((number_x, y_position), f"{i+1}.", font=place_font, fill="#111111")
                 
-                wrapped_lines = text_wrap(place_name, place_font, max_text_width, draw)
+                wrapped_lines = text_wrap(place_name, place_font, max_width, draw)
                 
                 temp_y = y_position
                 for line in wrapped_lines:
                     draw.text((text_x, temp_y), line, font=place_font, fill="#111111")
                     temp_y += line_height
                 
-                y_position = temp_y if len(wrapped_lines) > 1 else y_position + line_height
-                y_position += item_gap
+                y_position = temp_y + item_gap
+
 
         # --- 이미지 파일로 변환 및 전송 ---
         img_io = io.BytesIO()
@@ -1848,22 +1854,22 @@ def generate_travel_card(task_id):
             img_io,
             mimetype='image/png',
             as_attachment=True,
-            download_name=f'RoutePick_{location}.png'
+            download_name=f'RoutePick_{course_data.get("location", "")}.png'
         )
 
     except FileNotFoundError:
-        return "이미지 생성에 필요한 파일(폰트/템플릿)을 찾을 수 없습니다.", 500
+        return "가로 템플릿 이미지를 찾을 수 없습니다.", 500
     except Exception as e:
         print(f"이미지 생성 오류: {e}")
         return "이미지를 생성하는 중 오류가 발생했습니다.", 500
-    
+            
 # 기존의 단계별 입력 방식은 이제 사용되지 않으므로 주석 처리하거나 삭제 가능
 # @app.route('/', methods=['GET', 'POST']) ...
 
-@app.route('/')
-def index():
-    """메인 페이지"""
-    return render_template('index.html')
+# @app.route('/')
+# def index():
+#     """메인 페이지"""
+#     return render_template('index.html')
 
 if __name__ == '__main__':
     try:
