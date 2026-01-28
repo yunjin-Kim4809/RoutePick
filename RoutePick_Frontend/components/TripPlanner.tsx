@@ -283,7 +283,7 @@ interface FormData {
   groupSize: string;
   startDate: string;
   endDate: string;
-  visitTime: string;
+  visitTime: string; // '오전' | '오후' | '저녁' | '하루종일' | '기타(직접 입력)' 등 표시용
   transportation: string[];
   customTransport: string; // Store custom transport input separately
   budget: string; // 예산 정보
@@ -310,6 +310,9 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
   // Custom states for UI logic
   const [isGroupSizeOther, setIsGroupSizeOther] = useState(false);
   const [isTransportOther, setIsTransportOther] = useState(false);
+  const [isVisitTimeCustom, setIsVisitTimeCustom] = useState(false);
+  const [customStartTime, setCustomStartTime] = useState<{ hour: number; minute: number }>({ hour: 8, minute: 0 });
+  const [customEndTime, setCustomEndTime] = useState<{ hour: number; minute: number }>({ hour: 12, minute: 0 });
   
   // Loading Animation State
   const [activeLoadingStep, setActiveLoadingStep] = useState(0);
@@ -342,6 +345,9 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
       setIsCompleted(false);
       setIsGroupSizeOther(false);
       setIsTransportOther(false);
+      setIsVisitTimeCustom(false);
+      setCustomStartTime({ hour: 8, minute: 0 });
+      setCustomEndTime({ hour: 12, minute: 0 });
       setFormData({
         theme: '',
         location: '',
@@ -388,6 +394,24 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
   }, [isOpen, currentStep]);
 
 const handleNext = async () => {
+    // STEP 5(visitTime)에서 커스텀 시간 선택 시 유효성 검증
+    const currentStepId = steps[currentStep]?.id;
+    if (
+      currentStepId === 'visitTime' &&
+      isVisitTimeCustom &&
+      formData.startDate &&
+      formData.endDate &&
+      formData.startDate === formData.endDate
+    ) {
+      const startTotalMinutes = customStartTime.hour * 60 + customStartTime.minute;
+      const endTotalMinutes = customEndTime.hour * 60 + customEndTime.minute;
+
+      if (endTotalMinutes <= startTotalMinutes) {
+        alert('같은 날 여행을 선택하셨을 때는 종료 시간이 시작 시간보다 뒤여야 합니다.');
+        return;
+      }
+    }
+
     if (currentStep < steps.length - 1) {
       setCurrentStep(prev => prev + 1);
     } else {
@@ -988,28 +1012,234 @@ const handleNext = async () => {
 
             {/* STEP 5: TIME */}
             {stepData.id === 'visitTime' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {[
-                        { label: '오전', time: '08:00 - 12:00' },
-                        { label: '오후', time: '12:00 - 18:00' },
-                        { label: '저녁', time: '18:00 - 24:00' },
-                        { label: '하루종일', time: '00:00 - 24:00' }
-                    ].map((item) => (
-                        <button
-                            key={item.label}
-                            onClick={() => setFormData({...formData, visitTime: item.label})}
-                            className={`py-6 px-6 rounded-xl border text-left transition-all duration-300 ${
-                                formData.visitTime === item.label 
-                                ? 'bg-black text-white border-black' 
-                                : 'bg-white text-black border-gray-200 hover:border-black'
-                            }`}
-                        >
-                            <span className="block text-2xl font-bold mb-1">{item.label}</span>
-                            <span className={`text-xs ${formData.visitTime === item.label ? 'opacity-80' : 'opacity-50'}`}>
-                                {item.time}
-                            </span>
-                        </button>
-                    ))}
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                        {[
+                            { label: '오전', time: '08:00 - 12:00' },
+                            { label: '오후', time: '12:00 - 18:00' },
+                            { label: '저녁', time: '18:00 - 24:00' },
+                            { label: '하루종일', time: '00:00 - 24:00' },
+                            { label: '기타', time: '직접 선택' },
+                        ].map((item) => {
+                            const isCustom = item.label === '기타';
+                            const isSelected = isCustom ? isVisitTimeCustom : formData.visitTime === item.label;
+                            
+                            return (
+                                <button
+                                    key={item.label}
+                                    onClick={() => {
+                                        if (isCustom) {
+                                            setIsVisitTimeCustom(true);
+                                            setFormData({
+                                                ...formData,
+                                                visitTime: `기타(${String(customStartTime.hour).padStart(2, '0')}:${String(customStartTime.minute).padStart(2, '0')} - ${String(customEndTime.hour).padStart(2, '0')}:${String(customEndTime.minute).padStart(2, '0')})`,
+                                            });
+                                        } else {
+                                            setIsVisitTimeCustom(false);
+                                            setFormData({ ...formData, visitTime: item.label });
+                                        }
+                                    }}
+                                    className={`py-6 px-6 rounded-xl border text-left transition-all duration-300 ${
+                                        isSelected
+                                        ? 'bg-black text-white border-black' 
+                                        : 'bg-white text-black border-gray-200 hover:border-black'
+                                    }`}
+                                >
+                                    <span className="block text-2xl font-bold mb-1">{item.label}</span>
+                                    <span className={`text-xs ${isSelected ? 'opacity-80' : 'opacity-50'}`}>
+                                        {isCustom && isVisitTimeCustom
+                                            ? `${String(customStartTime.hour).padStart(2, '0')}:${String(customStartTime.minute).padStart(2, '0')} - ${String(customEndTime.hour).padStart(2, '0')}:${String(customEndTime.minute).padStart(2, '0')}`
+                                            : item.time}
+                                    </span>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {isVisitTimeCustom && (
+                        <div className="animate-fade-in-up mt-4 w-full max-w-xl">
+                            <label className="block text-xs text-gray-400 mb-3 font-bold uppercase tracking-widest">
+                                직접 방문 시간 설정
+                            </label>
+                            <div className="grid grid-cols-2 gap-6">
+                                {/* 시작 시간 */}
+                                <div>
+                                    <span className="block text-sm text-gray-500 mb-2 font-medium">출발 시간</span>
+                                    <div className="flex items-center gap-4">
+                                        {/* Hour */}
+                                        <div className="flex flex-col items-center">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomStartTime(prev => {
+                                                        const nextHour = (prev.hour + 1) % 24;
+                                                        const updated = { ...prev, hour: nextHour };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')} - ${String(customEndTime.hour).padStart(2, '0')}:${String(customEndTime.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 rotate-90" />
+                                            </button>
+                                            <div className="mt-1 mb-1 text-2xl font-semibold tabular-nums">
+                                                {String(customStartTime.hour).padStart(2, '0')}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomStartTime(prev => {
+                                                        const nextHour = (prev.hour + 23) % 24;
+                                                        const updated = { ...prev, hour: nextHour };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')} - ${String(customEndTime.hour).padStart(2, '0')}:${String(customEndTime.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 -rotate-90" />
+                                            </button>
+                                        </div>
+                                        <span className="text-2xl font-semibold">:</span>
+                                        {/* Minute */}
+                                        <div className="flex flex-col items-center">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomStartTime(prev => {
+                                                        const nextMinute = (prev.minute + 5) % 60;
+                                                        const updated = { ...prev, minute: nextMinute };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')} - ${String(customEndTime.hour).padStart(2, '0')}:${String(customEndTime.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 rotate-90" />
+                                            </button>
+                                            <div className="mt-1 mb-1 text-2xl font-semibold tabular-nums">
+                                                {String(customStartTime.minute).padStart(2, '0')}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomStartTime(prev => {
+                                                        const nextMinute = (prev.minute + 55) % 60; // -5분
+                                                        const updated = { ...prev, minute: nextMinute };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')} - ${String(customEndTime.hour).padStart(2, '0')}:${String(customEndTime.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 -rotate-90" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 종료 시간 */}
+                                <div>
+                                    <span className="block text-sm text-gray-500 mb-2 font-medium">종료 시간</span>
+                                    <div className="flex items-center gap-4">
+                                        {/* Hour */}
+                                        <div className="flex flex-col items-center">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomEndTime(prev => {
+                                                        const nextHour = (prev.hour + 1) % 24;
+                                                        const updated = { ...prev, hour: nextHour };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(customStartTime.hour).padStart(2, '0')}:${String(customStartTime.minute).padStart(2, '0')} - ${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 rotate-90" />
+                                            </button>
+                                            <div className="mt-1 mb-1 text-2xl font-semibold tabular-nums">
+                                                {String(customEndTime.hour).padStart(2, '0')}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomEndTime(prev => {
+                                                        const nextHour = (prev.hour + 23) % 24;
+                                                        const updated = { ...prev, hour: nextHour };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(customStartTime.hour).padStart(2, '0')}:${String(customStartTime.minute).padStart(2, '0')} - ${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 -rotate-90" />
+                                            </button>
+                                        </div>
+                                        <span className="text-2xl font-semibold">:</span>
+                                        {/* Minute */}
+                                        <div className="flex flex-col items-center">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomEndTime(prev => {
+                                                        const nextMinute = (prev.minute + 5) % 60;
+                                                        const updated = { ...prev, minute: nextMinute };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(customStartTime.hour).padStart(2, '0')}:${String(customStartTime.minute).padStart(2, '0')} - ${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 rotate-90" />
+                                            </button>
+                                            <div className="mt-1 mb-1 text-2xl font-semibold tabular-nums">
+                                                {String(customEndTime.minute).padStart(2, '0')}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCustomEndTime(prev => {
+                                                        const nextMinute = (prev.minute + 55) % 60; // -5분
+                                                        const updated = { ...prev, minute: nextMinute };
+                                                        setFormData(f => ({
+                                                            ...f,
+                                                            visitTime: `기타(${String(customStartTime.hour).padStart(2, '0')}:${String(customStartTime.minute).padStart(2, '0')} - ${String(updated.hour).padStart(2, '0')}:${String(updated.minute).padStart(2, '0')})`,
+                                                        }));
+                                                        return updated;
+                                                    });
+                                                }}
+                                                className="w-10 h-8 flex items-center justify-center rounded-md border border-gray-200 hover:bg-gray-100"
+                                            >
+                                                <ChevronLeft className="w-4 h-4 -rotate-90" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 
