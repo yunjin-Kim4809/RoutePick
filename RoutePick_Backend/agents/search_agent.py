@@ -8,6 +8,9 @@ import googlemaps
 from .base_agent import BaseAgent
 from tools.tavily_search_tool import TavilySearchTool
 
+import numpy as np
+from sklearn.cluster import DBSCAN
+
 class SearchAgent(BaseAgent):
     """
     사용자의 테마를 [행동 단위]로 분석하여 [코스 구조]를 먼저 설계하고,
@@ -179,14 +182,16 @@ class SearchAgent(BaseAgent):
                     "photo_url": p_obj['google_info'].get('photo_url')
                 })
                 seen_names.add(g_name)
-        
-        candidate_pool = candidate_pool_raw[:40]
 
-        print(f"\n✅ 1차 필터링 완료: {len(candidate_pool)}개의 유효 후보 장소를 다음 에이전트로 전달합니다.")
+
+        print(f"\n🧠 [Step 3-4] 최적의 20개 장소 선별 중... (이동수단: {input_data.get('transportation')})")
+        final_pool = self.select_best_20_candidates(candidate_pool_raw, input_data.get('transportation'))
+        print(f"✅ 최종 선별 완료: {len(final_pool)}개 장소를 PlanningAgent로 전달합니다.") 
+
         
         return {
             "success": True, "agent_name": self.name,
-            "action_analysis": strategy.get('action_analysis'), "candidate_pool": candidate_pool,
+            "action_analysis": strategy.get('action_analysis'), "candidate_pool": final_pool,
             "user_intent": {"course_structure": strategy.get('course_structure'), "raw_theme": theme, "location": location}
         }
      
@@ -847,3 +852,147 @@ class SearchAgent(BaseAgent):
         if not isinstance(input_data, dict):
             return False
         return bool(input_data.get("theme") and input_data.get("location"))
+
+
+    def select_best_20_candidates(self, candidates, transportation):
+        """
+        [최종 로직] 40개 후보 -> 최적의 20개 정제
+        프론트엔드 다중 선택(도보, 지하철, 기타 등) 완벽 호환 버전
+        """
+        TARGET_COUNT = 20
+        
+        # 쿼터제 설정 (쇼핑 포함)
+        QUOTAS = {"식당": 5, "카페": 5, "활동": 4, "관광지": 4, "쇼핑": 2}
+        
+        # ---------------------------------------------------------
+        # 1. 이동수단 판단 로직 (프론트엔드 호환 강화)
+        # ---------------------------------------------------------
+        transport_str = str(transportation) # "도보, 지하철" or "자전거" 등
+        
+        # 군집 분석을 적용할 "단거리/제약적 이동수단" 키워드 정의
+        # '도보'가 포함되거나, 기타 입력에 '자전거', '킥보드', '따릉이' 등이 있으면 군집 분석 실행
+        short_range_keywords = ["도보", "자전거", "킥보드", "따릉이", "걷기"]
+        
+        # 하나라도 포함되어 있으면 True
+        is_clustering_needed = any(keyword in transport_str for keyword in short_range_keywords)
+
+        print(f"   🚗 이동 수단 분석: '{transport_str}' -> 군집 분석 필요 여부: {is_clustering_needed}")
+
+
+        # --- Case A: 차량/대중교통 (넓은 지역 탐색) ---
+        if not is_clustering_needed:
+            return self._apply_quota_and_score(candidates, TARGET_COUNT, QUOTAS)
+
+
+        # --- Case B: 도보/자전거 (군집 분석) ---
+        valid_candidates = [p for p in candidates if p.get('coordinates')]
+        coords = [(p['coordinates']['lat'], p['coordinates']['lng']) for p in valid_candidates]
+        
+        # 데이터가 너무 적으면(10개 미만) 군집 분석 의미 없음 -> 쿼터제로
+        if len(coords) < 10:
+            return self._apply_quota_and_score(candidates, TARGET_COUNT, QUOTAS)
+
+        # DBSCAN 설정 (도보: 1.2km / 자전거 포함 시 약간 더 넓혀도 되지만 안전하게 1.5km 유지)
+        kms_per_radian = 6371.0088
+        epsilon = 1.5 / kms_per_radian 
+        
+        db = DBSCAN(eps=epsilon, min_samples=3, metric='haversine').fit(np.radians(coords))
+        labels = db.labels_
+        unique_labels = set(labels) - {-1}
+        
+        # 군집 실패 시 -> 쿼터제로
+        if not unique_labels:
+            return self._apply_quota_and_score(candidates, TARGET_COUNT, QUOTAS)
+
+        # 최고의 군집 선정 (점수 + 카테고리 다양성)
+        best_cluster_indices = []
+        max_score = -1
+        best_center = (0, 0)
+
+        for label in unique_labels:
+            indices = [i for i, l in enumerate(labels) if l == label]
+            
+            # 기본 점수 합산
+            cluster_score = sum(valid_candidates[i].get('trust_score', 0) for i in indices)
+            # 카테고리 다양성 가산점 (식당만 있는 곳보다 카페/활동 섞인 곳 우대)
+            cats = set(valid_candidates[i].get('category') for i in indices)
+            cluster_score *= (1 + len(cats) * 0.2) 
+
+            if cluster_score > max_score:
+                max_score = cluster_score
+                best_cluster_indices = indices
+                # 중심점 계산
+                lats = [coords[i][0] for i in indices]
+                lngs = [coords[i][1] for i in indices]
+                best_center = (sum(lats)/len(lats), sum(lngs)/len(lngs))
+
+        # 선정된 군집 멤버
+        cluster_members = [valid_candidates[i] for i in best_cluster_indices]
+
+        # 군집 내부에서 1차 선발 (점수+쿼터)
+        primary_selected = self._apply_quota_and_score(cluster_members, TARGET_COUNT, QUOTAS)
+        
+        if len(primary_selected) >= TARGET_COUNT:
+            return primary_selected
+
+        # --- Backfill (부족분 수혈) ---
+        selected_ids = {id(p) for p in primary_selected}
+        leftovers = [p for p in candidates if id(p) not in selected_ids]
+        
+        # 거리순 정렬 함수
+        def dist_sq(p):
+            if not p.get('coordinates'): return 9999
+            return (p['coordinates']['lat'] - best_center[0])**2 + (p['coordinates']['lng'] - best_center[1])**2
+        
+        leftovers.sort(key=dist_sq)
+
+        # 현재 쿼터 현황 파악
+        current_counts = {k: 0 for k in QUOTAS}
+        for p in primary_selected:
+            cat = p.get('category', '기타')
+            if cat in current_counts: current_counts[cat] += 1
+                
+        final_list = list(primary_selected)
+        
+        # 1. 쿼터 부족분 채우기 (가까운 순)
+        for p in leftovers:
+            if len(final_list) >= TARGET_COUNT: break
+            cat = p.get('category', '기타')
+            if cat in QUOTAS and current_counts[cat] < QUOTAS[cat]:
+                final_list.append(p)
+                current_counts[cat] += 1
+                selected_ids.add(id(p))
+                
+        # 2. 나머지 자리 채우기
+        for p in leftovers:
+            if len(final_list) >= TARGET_COUNT: break
+            if id(p) not in selected_ids:
+                final_list.append(p)
+                selected_ids.add(id(p))
+                
+        return final_list
+
+
+    def _apply_quota_and_score(self, candidates, target_limit, quotas):
+        """단순 쿼터제 + 점수순 선발 (차량 이동이나 군집 실패 시 사용)"""
+        sorted_candidates = sorted(candidates, key=lambda x: x.get('trust_score', 0), reverse=True)
+        selected = []
+        current_counts = {k: 0 for k in quotas}
+        
+        # 1. 쿼터 우선
+        for p in sorted_candidates:
+            cat = p.get('category', '기타')
+            if cat in quotas:
+                if current_counts[cat] < quotas[cat]:
+                    selected.append(p)
+                    current_counts[cat] += 1
+                    
+        # 2. 나머지 (쿼터 초과 허용)
+        selected_ids = {id(p) for p in selected}
+        for p in sorted_candidates:
+            if len(selected) >= target_limit: break
+            if id(p) not in selected_ids:
+                selected.append(p)
+                selected_ids.add(id(p))
+                
+        return selected

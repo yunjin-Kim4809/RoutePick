@@ -813,4 +813,3 @@ class CourseCreationTool(BaseTool):
             formatted.append(info)
             
         return "\n\n".join(formatted)
-

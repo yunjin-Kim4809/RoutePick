@@ -2,13 +2,16 @@ import asyncio
 import threading
 import json
 import os
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from flask_cors import CORS
 from chatbot import get_chatbot_response, clear_chat_history, parse_course_update  # chatbot.py가 course 객체를 인자로 받도록 수정 필요
 from agents import SearchAgent, PlanningAgent
 from config.config import Config
 import uuid
 import googlemaps
+    
+from PIL import Image, ImageDraw, ImageFont
+import io # 메모리 상에서 이미지를 다루기 위함
 
 app = Flask(__name__)
 app.secret_key = 'string_secret_key'
@@ -189,9 +192,9 @@ async def execute_Agents(task_id, input_data):
         if not places:
             raise Exception("검색된 장소가 없습니다. 다른 테마나 지역으로 시도해주세요.")
         
-        # 2. 검색 완료 알림 (실제 찾은 장소 개수 반영)
-        agent_tasks[task_id]["message"] = f"✅ 검색 완료: 총 {len(places)}개의 추천 장소를 발견했습니다."
-        print(f"\n✅ 검색 완료: {len(places)}개의 장소를 찾았습니다.\n")
+        # 2. 검색 완료 알림 
+        agent_tasks[task_id]["message"] = f"✅ 검색 완료: 검색 에이전트로부터 추천 장소를 전달받았습니다!"
+        print(f"\n✅ 검색 완료: search_agent로부터 장소를 전달 받았습니다.\n")
 
         # 잠시 대기 (사용자가 메시지를 읽을 시간을 줌)
         await asyncio.sleep(1.5)
@@ -1162,6 +1165,121 @@ def delete_saved_place(place_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# (text_wrap 헬퍼 함수는 이전과 동일하게 유지)
+def text_wrap(text, font, max_width, draw):
+    lines = []
+    words = text.split(' ')
+    current_line = ''
+    for word in words:
+        word_width = draw.textlength(word, font)
+        if word_width > max_width:
+            temp_word = ''
+            for char in word:
+                if draw.textlength(temp_word + char, font) > max_width:
+                    lines.append(temp_word)
+                    temp_word = char
+                else:
+                    temp_word += char
+            if temp_word: lines.append(temp_word)
+            continue
+        if draw.textlength(current_line + ' ' + word, font) <= max_width:
+            current_line += ' ' + word
+        else:
+            lines.append(current_line.strip())
+            current_line = word
+    if current_line: lines.append(current_line.strip())
+    return lines
+
+
+@app.route('/api/generate-card/<task_id>')
+def generate_travel_card(task_id):
+    course_data = agent_tasks.get(task_id, {}).get('course')
+    if not course_data:
+        return "코스 정보를 찾을 수 없습니다.", 404
+
+    try:
+        # --- 기본 설정 ---
+        IMG_WIDTH = 1080
+        PADDING = 90 # 여백을 조금 더 줍니다.
+        
+        template = Image.open("static/images/card_template.png")
+        draw = ImageDraw.Draw(template)
+
+        font_path = "static/fonts/GowunDodum-Regular.ttf"
+        
+        # --- [수정] 템플릿에 맞게 폰트 크기 및 간격 재조정 ---
+        title_font = ImageFont.truetype(font_path, size=90)
+        subtitle_font = ImageFont.truetype(font_path, size=55)
+        
+        sequence = course_data.get('sequence', [])
+        num_places = len(sequence)
+        
+        if num_places > 6:
+            place_font_size = 44
+            line_height_ratio = 1.4
+            item_gap = 20  # [수정] 장소 간 간격을 더 좁게
+        else:
+            place_font_size = 50
+            line_height_ratio = 1.5
+            item_gap = 30  # [수정] 장소 간 간격을 더 좁게
+
+        place_font = ImageFont.truetype(font_path, size=place_font_size)
+        line_height = place_font.getbbox("A")[3] * line_height_ratio
+
+        # --- 텍스트 그리기 ---
+        
+        # 1. 타이틀 (위치를 살짝 위로 조정)
+        location = course_data.get("location", "")
+        theme = course_data.get("theme", "추천 코스")
+        draw.text((PADDING, 180), location, font=title_font, fill="#333333")
+        draw.text((PADDING, 300), theme, font=subtitle_font, fill="#555555")
+
+        # 2. 코스 목록 (시작 위치 조정)
+        y_position = 480 # 타이틀과 간격을 더 줍니다.
+        places = course_data.get('places', [])
+        
+        number_x = PADDING
+        text_x = number_x + 70
+        max_text_width = IMG_WIDTH - text_x - PADDING
+        
+        for i, place_idx in enumerate(sequence):
+            # [수정] 템플릿 하단 로고와 겹치지 않도록 안전 여백 확보
+            if y_position > template.height - 300:
+                draw.text((number_x, y_position), "...", font=place_font, fill="#888888")
+                break
+
+            if place_idx < len(places):
+                place_name = places[place_idx]['name']
+                draw.text((number_x, y_position), f"{i+1}.", font=place_font, fill="#111111")
+                
+                wrapped_lines = text_wrap(place_name, place_font, max_text_width, draw)
+                
+                temp_y = y_position
+                for line in wrapped_lines:
+                    draw.text((text_x, temp_y), line, font=place_font, fill="#111111")
+                    temp_y += line_height
+                
+                y_position = temp_y if len(wrapped_lines) > 1 else y_position + line_height
+                y_position += item_gap
+
+        # --- 이미지 파일로 변환 및 전송 ---
+        img_io = io.BytesIO()
+        template.save(img_io, 'PNG', quality=95)
+        img_io.seek(0)
+
+        return send_file(
+            img_io,
+            mimetype='image/png',
+            as_attachment=True,
+            download_name=f'RoutePick_{location}.png'
+        )
+
+    except FileNotFoundError:
+        return "이미지 생성에 필요한 파일(폰트/템플릿)을 찾을 수 없습니다.", 500
+    except Exception as e:
+        print(f"이미지 생성 오류: {e}")
+        return "이미지를 생성하는 중 오류가 발생했습니다.", 500
+    
 # 기존의 단계별 입력 방식은 이제 사용되지 않으므로 주석 처리하거나 삭제 가능
 # @app.route('/', methods=['GET', 'POST']) ...
 
