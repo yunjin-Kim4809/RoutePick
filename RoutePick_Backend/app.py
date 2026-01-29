@@ -1874,10 +1874,26 @@ def generate_travel_card(task_id):
 # 기존의 단계별 입력 방식은 이제 사용되지 않으므로 주석 처리하거나 삭제 가능
 # @app.route('/', methods=['GET', 'POST']) ...
 
+# index.html은 단계별 입력 폼용 변수(step, messages, finished, results)를 사용함
+INDEX_MESSAGES = [
+    "어떤 테마로 여행을 계획하시나요?",
+    "어느 지역으로 여행가시나요?",
+    "인원수를 선택해주세요",
+    "여행 기간을 선택해주세요",
+    "선호하는 시간대를 입력해주세요",
+    "이동 수단을 선택해주세요",
+]
+
 @app.route('/')
 def index():
-    """메인 페이지"""
-    return render_template('index.html')
+    """메인 페이지 (1단계 입력 화면)"""
+    return render_template(
+        'index.html',
+        step=1,
+        messages=INDEX_MESSAGES,
+        finished=False,
+        results=[],
+    )
 
 if __name__ == '__main__':
     try:
