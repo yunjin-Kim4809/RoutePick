@@ -70,11 +70,11 @@
 </div>
 <script>
 setInterval(async () => {
-    const res = await fetch("/status");
+    const res = await fetch("/status/{{ task_id }}");
     const data = await res.json();
 
     if (data.done) {
-        window.location.href = "/chat-map";
+        window.location.href = "/chat-map/{{ task_id }}";
     }
 }, 1000);
 </script>
