@@ -54,10 +54,8 @@ class GoogleMapsTool(BaseTool):
                 self.api_key = raw_key
                 break
             else:
-                # 구글 키가 아닌 경우는 무시하고 다음 후보로 진행
                 print(f"⚠️ Google Maps API 키 형식이 올바르지 않습니다. source={source}, key={_mask_key(raw_key)}")
         
-        # API 키 디버깅 정보 출력
         if self.api_key:
             api_key_preview = f"{self.api_key[:6]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
             print(f"🔑 Google Maps API 키 로드됨: {api_key_preview} (길이: {len(self.api_key)})")
@@ -67,7 +65,6 @@ class GoogleMapsTool(BaseTool):
             print(f"   - 환경변수 GOOGLE_MAPS_API_KEY: {_mask_key(os.getenv('GOOGLE_MAPS_API_KEY'))}")
             print(f"   - config['api_key']: {_mask_key(self.config.get('api_key'))}")
         
-        # API 키가 없어도 클라이언트는 None으로 유지 (나중에 설정 가능)
         self.client = None
         if self.api_key:
             try:
@@ -1725,7 +1722,7 @@ class GoogleMapsTool(BaseTool):
                             origin=origin_tuple,
                             destination=dest_tuple,
                             waypoints=waypoints,
-                            optimize_waypoints=False,  # 이미 최적화되어 있으므로 False
+                            optimize_waypoints=False,  
                             mode=primary_mode,
                             language='ko'  
                         )
@@ -1959,7 +1956,7 @@ class GoogleMapsTool(BaseTool):
                                 origin=origin_str,
                                 destination=dest_str,
                                 mode=try_mode,
-                                language='ko'  # 한국어 설정
+                                language='ko' 
                             )
                         
                         directions_result = await loop.run_in_executor(None, call_directions)
