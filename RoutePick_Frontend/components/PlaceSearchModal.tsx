@@ -81,9 +81,11 @@ const PlaceSearchModal: React.FC<PlaceSearchModalProps> = ({ isOpen, onClose }) 
     };
   }, []);
 
+  const API_BASE = "https://routepick.onrender.com";
+
   const loadSavedPlaces = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/saved-places');
+      const response = await fetch(`${API_BASE}/api/saved-places`);
       if (response.ok) {
         const data = await response.json();
         setSavedPlaces(data.places || []);
@@ -102,7 +104,7 @@ const PlaceSearchModal: React.FC<PlaceSearchModalProps> = ({ isOpen, onClose }) 
     setIsSearching(true);
     setSearchResults([]); // 이전 검색 결과 초기화
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/search-place', {
+      const response = await fetch(`${API_BASE}/api/search-place`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: searchQuery })
@@ -135,7 +137,7 @@ const PlaceSearchModal: React.FC<PlaceSearchModalProps> = ({ isOpen, onClose }) 
   const handleSavePlace = async (place: Place) => {
     setIsLoading(true);
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/save-place', {
+      const response = await fetch(`${API_BASE}/api/save-place`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(place)
@@ -162,7 +164,7 @@ const PlaceSearchModal: React.FC<PlaceSearchModalProps> = ({ isOpen, onClose }) 
 
     setIsLoading(true);
     try {
-      const response = await fetch(`http://127.0.0.1:5000/api/saved-places/${placeId}`, {
+      const response = await fetch(`${API_BASE}/api/saved-places/${placeId}`, {
         method: 'DELETE'
       });
 

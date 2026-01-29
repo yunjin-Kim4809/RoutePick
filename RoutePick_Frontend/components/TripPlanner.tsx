@@ -433,6 +433,8 @@ const TripPlanner: React.FC<TripPlannerProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen, currentStep]);
 
+const API_BASE = "https://routepick.onrender.com";
+
 const handleNext = async () => {
     // STEP 5(visitTime)에서 커스텀 시간 선택 시 유효성 검증
     const currentStepId = steps[currentStep]?.id;
@@ -460,7 +462,7 @@ const handleNext = async () => {
         setShowLog(true); // 로딩 시작되자마자 알림창 띄우기
       try {
         // 1. Flask 서버에 데이터 전송
-        const response = await fetch('http://127.0.0.1:5000/api/create-trip', {
+        const response = await fetch(`${API_BASE}/api/create-trip`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -478,7 +480,7 @@ const handleNext = async () => {
         // 2. 상태 확인 폴링 (1초 간격으로 변경하여 반응 속도 향상)
         const pollStatus = setInterval(async () => {
           try {
-            const statusResponse = await fetch(`http://127.0.0.1:5000/status/${taskId}`);
+            const statusResponse = await fetch(`${API_BASE}/status/${taskId}`);
             const statusData = await statusResponse.json();
             if (statusData.message && statusData.message !== lastLogRef.current) {
                 lastLogRef.current = statusData.message;
@@ -496,7 +498,7 @@ const handleNext = async () => {
 
               if (statusData.success) {
                 // 성공 시 이동
-                window.location.href = `http://127.0.0.1:5000/chat-map/${taskId}`;
+                window.location.href = `${API_BASE}/chat-map/${taskId}`;
               } else {
                 alert(`여행 생성 실패: ${statusData.error || '알 수 없는 오류'}`);
                 onClose();
