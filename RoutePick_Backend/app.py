@@ -1874,10 +1874,10 @@ def generate_travel_card(task_id):
 # 기존의 단계별 입력 방식은 이제 사용되지 않으므로 주석 처리하거나 삭제 가능
 # @app.route('/', methods=['GET', 'POST']) ...
 
-# @app.route('/')
-# def index():
-#     """메인 페이지"""
-#     return render_template('index.html')
+@app.route('/')
+def index():
+    """메인 페이지"""
+    return render_template('index.html')
 
 if __name__ == '__main__':
     try:
