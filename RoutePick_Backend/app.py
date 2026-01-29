@@ -1896,14 +1896,20 @@ def index():
     )
 
 if __name__ == '__main__':
+    # Render 등 배포 환경에서는 PORT 환경변수 사용, 없으면 5000
+    port = int(os.environ.get('PORT', 5000))
+    # 배포 환경에서는 debug=False (재시작 방지)
+    is_debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+    
     try:
         print("=" * 50)
         print("RoutePick 서버를 시작합니다...")
+        print(f"포트: {port}, 디버그 모드: {is_debug}")
         print("=" * 50)
-        app.run(debug=True, port=5000, host='0.0.0.0')
+        app.run(debug=is_debug, port=port, host='0.0.0.0')
     except OSError as e:
         if "Address already in use" in str(e) or "포트가 이미 사용 중" in str(e):
-            print(f"\n오류: 포트 5000이 이미 사용 중입니다.")
+            print(f"\n오류: 포트 {port}이(가) 이미 사용 중입니다.")
             print("다른 포트를 사용하거나 기존 프로세스를 종료해주세요.")
         else:
             print(f"\n오류 발생: {e}")
